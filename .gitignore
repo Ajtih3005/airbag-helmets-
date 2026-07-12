@@ -1,0 +1,29 @@
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+.env
+
+# Jupyter checkpoints
+.ipynb_checkpoints/
+
+# Model files (track with Git LFS if needed)
+models/*.pkl
+
+# Data — raw synthetic is reproducible, no need to track
+data/synthetic/*.csv
+data/processed/*.csv
+
+# VS Code
+.vscode/
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
