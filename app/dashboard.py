@@ -1,4 +1,4 @@
-﻿"""
+"""
 dashboard.py
 ------------
 Live monitoring dashboard for Smart Airbag Helmet.
@@ -193,8 +193,8 @@ def run_dashboard(model, meta, stream, hardware=False, verbose=True):
 # -------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Smart Airbag Helmet -- Live Dashboard")
-    parser.add_argument("--model-dir",  default="models",         help="Model directory")
-    parser.add_argument("--dataset",    default="data/synthetic/helmet_imu_raw.csv")
+    parser.add_argument("--model-dir",  default=os.path.join(project_root, "models"), help="Model directory")
+    parser.add_argument("--dataset",    default=os.path.join(project_root, "data", "synthetic", "helmet_imu_raw.csv"))
     parser.add_argument("--session",    type=int, default=None)
     parser.add_argument("--hardware",   action="store_true")
     parser.add_argument("--port",       default="/dev/ttyUSB0",   help="Serial port (hardware mode)")
