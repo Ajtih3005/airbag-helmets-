@@ -1,3 +1,4 @@
+﻿# Core ML & data
 numpy>=1.24
 pandas>=2.0
 matplotlib>=3.7
@@ -5,6 +6,21 @@ seaborn>=0.12
 scikit-learn>=1.3
 xgboost>=2.0
 joblib>=1.3
+
+# Jupyter notebooks
 jupyter
 notebook
 ipykernel
+
+# Hardware interface (Raspberry Pi)
+pyserial>=3.5          # UART serial communication with ESP32
+
+# Edge model export
+m2cgen>=0.10.0         # Export RF/XGB to pure C++ (ESP32 firmware)
+skl2onnx>=1.15         # Export sklearn models to ONNX
+onnx>=1.14             # ONNX model format
+onnxruntime>=1.16      # Fast ONNX inference on Raspberry Pi
+
+# NOTE: RPi.GPIO is not listed here — install separately on Raspberry Pi only:
+#   pip install RPi.GPIO
+# On Windows/Mac (for development): use gpiozero mock or skip GPIO calls
