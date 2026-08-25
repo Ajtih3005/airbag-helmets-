@@ -1,0 +1,1555 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0" />
+  <title>Smart Airbag Helmet — Live 3D Simulation</title>
+  <link
+    href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap"
+    rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #03040a;
+      --panel: rgba(5, 8, 20, 0.82);
+      --border: rgba(255, 255, 255, 0.07);
+      --accent: #00d4ff;
+      --accent2: #7c3aed;
+      --danger: #ff3b5c;
+      --warn: #f59e0b;
+      --green: #10b981;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --mono: 'JetBrains Mono', monospace;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      font-family: 'Outfit', sans-serif;
+      color: var(--text);
+    }
+
+    /* ─── Layout ─── */
+    #app {
+      display: flex;
+      width: 100vw;
+      height: 100vh;
+      position: relative;
+    }
+
+    #world {
+      flex: 1;
+      display: block;
+      outline: none;
+    }
+
+    #sidebar {
+      width: 340px;
+      min-width: 340px;
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      overflow-y: auto;
+      backdrop-filter: blur(20px);
+    }
+
+    /* ─── Panel blocks ─── */
+    .panel {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-title .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--accent);
+    }
+
+    /* ─── HUD overlays on canvas ─── */
+    #hud {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 340px;
+      bottom: 0;
+      pointer-events: none;
+    }
+
+    /* Event badge */
+    #event-badge {
+      position: absolute;
+      top: 18px;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 24px;
+      background: rgba(0, 0, 0, 0.6);
+      border: 1px solid var(--border);
+      border-radius: 40px;
+      backdrop-filter: blur(12px);
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      color: var(--accent);
+      transition: all 0.3s;
+    }
+
+    #event-badge.near-crash {
+      border-color: var(--warn);
+      color: var(--warn);
+      background: rgba(245, 158, 11, 0.15);
+    }
+
+    #event-badge.crash {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(255, 59, 92, 0.2);
+      animation: badgePulse 0.5s ease-in-out infinite;
+    }
+
+    @keyframes badgePulse {
+
+      0%,
+      100% {
+        box-shadow: 0 0 20px rgba(255, 59, 92, 0.4);
+      }
+
+      50% {
+        box-shadow: 0 0 40px rgba(255, 59, 92, 0.8);
+      }
+    }
+
+    /* Speed & lean gauges — bottom left */
+    #gauges {
+      position: absolute;
+      bottom: 20px;
+      left: 20px;
+      display: flex;
+      gap: 16px;
+      align-items: flex-end;
+    }
+
+    .gauge {
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 12px 16px;
+      backdrop-filter: blur(12px);
+      min-width: 90px;
+      text-align: center;
+    }
+
+    .gauge-val {
+      font-family: var(--mono);
+      font-size: 28px;
+      font-weight: 600;
+      line-height: 1;
+      color: #fff;
+    }
+
+    .gauge-unit {
+      font-size: 10px;
+      color: var(--muted);
+      margin-top: 4px;
+      letter-spacing: 1px;
+      text-transform: uppercase;
+    }
+
+    /* Gate counter — bottom center */
+    #gate-hud {
+      position: absolute;
+      bottom: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.65);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 20px;
+      backdrop-filter: blur(12px);
+      text-align: center;
+    }
+
+    .gate-label {
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .gates {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+    }
+
+    .gate {
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      border: 1.5px solid var(--muted);
+      transition: all 0.3s;
+    }
+
+    .gate.hit {
+      border-color: var(--accent);
+      background: var(--accent);
+      box-shadow: 0 0 10px var(--accent);
+    }
+
+    /* Progress bar — very bottom */
+    #progress-bar-wrap {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 340px;
+      height: 3px;
+      background: rgba(255, 255, 255, 0.08);
+    }
+
+    #progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      transition: width 0.05s linear;
+    }
+
+    /* Crash vfx overlay */
+    #crash-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.2s;
+    }
+
+    #crack-svg {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0;
+    }
+
+    #red-vignette {
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at center, transparent 40%, rgba(255, 30, 30, 0.6) 100%);
+      opacity: 0;
+    }
+
+    /* Airbag deploy banner */
+    #deploy-banner {
+      display: none;
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background: rgba(255, 59, 92, 0.15);
+      border: 2px solid var(--danger);
+      border-radius: 20px;
+      padding: 24px 48px;
+      text-align: center;
+      backdrop-filter: blur(20px);
+      box-shadow: 0 0 60px rgba(255, 59, 92, 0.5);
+    }
+
+    #deploy-banner h2 {
+      font-size: 32px;
+      font-weight: 900;
+      color: var(--danger);
+      letter-spacing: 2px;
+    }
+
+    #deploy-banner p {
+      font-size: 14px;
+      color: var(--muted);
+      margin-top: 8px;
+    }
+
+    /* ─── Sidebar: connection status ─── */
+    .conn-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 6px;
+    }
+
+    .conn-label {
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .conn-badge {
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+
+    .conn-badge.ok {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--green);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .conn-badge.off {
+      background: rgba(100, 116, 139, 0.1);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    .conn-badge.warn {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warn);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    /* ─── Sensor graphs ─── */
+    .graph-row {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    .graph-block {
+      flex: 1;
+    }
+
+    .graph-label {
+      font-size: 9px;
+      font-family: var(--mono);
+      color: var(--muted);
+      margin-bottom: 3px;
+      letter-spacing: 0.5px;
+    }
+
+    .sparkline {
+      width: 100%;
+      height: 36px;
+      display: block;
+    }
+
+    /* ─── ML comparison ─── */
+    .ml-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .ml-col {
+      flex: 1;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    .ml-col-title {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 1.5px;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .ml-col-title.pi {
+      color: var(--accent);
+    }
+
+    .ml-col-title.browser {
+      color: var(--accent2);
+    }
+
+    .ml-metric {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+
+    .ml-metric-name {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .ml-metric-val {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .ml-metric-val.danger {
+      color: var(--danger);
+    }
+
+    .ml-metric-val.warn {
+      color: var(--warn);
+    }
+
+    .ml-metric-val.ok {
+      color: var(--green);
+    }
+
+    .verdict-chip {
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: 8px;
+      font-size: 10px;
+      font-weight: 700;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .verdict-chip.normal {
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--green);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }
+
+    .verdict-chip.near {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warn);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .verdict-chip.crash {
+      background: rgba(255, 59, 92, 0.2);
+      color: var(--danger);
+      border: 1px solid rgba(255, 59, 92, 0.4);
+      animation: chipPulse 0.6s ease-in-out infinite;
+    }
+
+    @keyframes chipPulse {
+
+      0%,
+      100% {
+        box-shadow: 0 0 0 transparent;
+      }
+
+      50% {
+        box-shadow: 0 0 12px rgba(255, 59, 92, 0.5);
+      }
+    }
+
+    /* ─── Pi readings ─── */
+    .pi-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+
+    .pi-cell {
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+
+    .pi-cell-label {
+      font-size: 9px;
+      color: var(--muted);
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+
+    .pi-cell-val {
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 600;
+    }
+
+    /* ─── Progress ─── */
+    .timeline {
+      width: 100%;
+      height: 4px;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 2px;
+      margin-top: 10px;
+      overflow: hidden;
+    }
+
+    .timeline-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--accent2), var(--accent));
+      border-radius: 2px;
+      transition: width 0.05s linear;
+    }
+
+    /* ─── Black box panel ─── */
+    .bb-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 5px 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+    }
+
+    .bb-key {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .bb-val {
+      font-family: var(--mono);
+      font-size: 12px;
+      font-weight: 500;
+    }
+
+    .bb-val.danger {
+      color: var(--danger);
+    }
+
+    .bb-val.ok {
+      color: var(--green);
+    }
+
+    /* ─── Scrollbar ─── */
+    #sidebar::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    #sidebar::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    #sidebar::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <!-- ─── THREE.JS CANVAS ─── -->
+    <canvas id="world"></canvas>
+
+    <!-- ─── HUD OVERLAY ─── -->
+    <div id="hud">
+      <div id="event-badge">NORMAL</div>
+
+      <div id="gauges">
+        <div class="gauge">
+          <div class="gauge-val" id="g-speed">0</div>
+          <div class="gauge-unit">km/h</div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-val" id="g-lean">0°</div>
+          <div class="gauge-unit">Lean</div>
+        </div>
+        <div class="gauge">
+          <div class="gauge-val" id="g-g" style="color:var(--accent)">0.0g</div>
+          <div class="gauge-unit">Impact</div>
+        </div>
+      </div>
+
+      <div id="gate-hud">
+        <div class="gate-label">Detection Gates</div>
+        <div class="gates">
+          <div class="gate" id="gate0"></div>
+          <div class="gate" id="gate1"></div>
+          <div class="gate" id="gate2"></div>
+        </div>
+      </div>
+
+      <div id="progress-bar-wrap">
+        <div id="progress-bar"></div>
+      </div>
+
+      <!-- Crash VFX overlays -->
+      <div id="crash-overlay">
+        <div id="red-vignette"></div>
+      </div>
+      <svg id="crack-svg" viewBox="0 0 800 600" xmlns="http://www.w3.org/2000/svg">
+        <g id="crack-lines" stroke="rgba(255,255,255,0.6)" stroke-width="1.5" fill="none" opacity="0">
+          <path
+            d="M400,300 L320,200 L280,140 M400,300 L460,180 L510,80 M400,300 L350,420 L290,500 M400,300 L500,380 L580,440" />
+          <path d="M320,200 L240,230 M460,180 L540,160 M350,420 L310,470 M500,380 L560,400" />
+        </g>
+      </svg>
+
+      <div id="deploy-banner">
+        <h2>⚡ AIRBAG DEPLOYED</h2>
+        <p id="deploy-info">Crash detected — Emergency services alerted</p>
+      </div>
+    </div>
+
+    <!-- ─── SIDEBAR ─── -->
+    <div id="sidebar">
+
+      <!-- Connection Status -->
+      <div class="panel">
+        <div class="panel-title">
+          <div class="dot"></div>System Status
+        </div>
+        <div class="conn-row">
+          <span class="conn-label">WebSocket Server</span>
+          <span class="conn-badge off" id="badge-ws">Connecting</span>
+        </div>
+        <div class="conn-row">
+          <span class="conn-label">Raspberry Pi</span>
+          <span class="conn-badge off" id="badge-pi">Not connected</span>
+        </div>
+        <div class="conn-row">
+          <span class="conn-label">Scenario</span>
+          <span class="conn-badge warn" id="badge-scenario">—</span>
+        </div>
+        <div class="timeline">
+          <div class="timeline-fill" id="tl-fill"></div>
+        </div>
+      </div>
+
+      <!-- Sensor Graph HUD -->
+      <div class="panel">
+        <div class="panel-title">
+          <div class="dot" style="background:var(--accent2)"></div>Live Sensor Feed
+        </div>
+        <div class="graph-row">
+          <div class="graph-block">
+            <div class="graph-label">ax (m/s²)</div><canvas class="sparkline" id="sp-ax"></canvas>
+          </div>
+          <div class="graph-block">
+            <div class="graph-label">ay (m/s²)</div><canvas class="sparkline" id="sp-ay"></canvas>
+          </div>
+          <div class="graph-block">
+            <div class="graph-label">az (m/s²)</div><canvas class="sparkline" id="sp-az"></canvas>
+          </div>
+        </div>
+        <div class="graph-row">
+          <div class="graph-block">
+            <div class="graph-label">gx (°/s)</div><canvas class="sparkline" id="sp-gx"></canvas>
+          </div>
+          <div class="graph-block">
+            <div class="graph-label">gy (°/s)</div><canvas class="sparkline" id="sp-gy"></canvas>
+          </div>
+          <div class="graph-block">
+            <div class="graph-label">gz (°/s)</div><canvas class="sparkline" id="sp-gz"></canvas>
+          </div>
+        </div>
+        <div class="graph-row">
+          <div class="graph-block" style="flex:3">
+            <div class="graph-label">hg_az — High-G Impact</div><canvas class="sparkline" id="sp-hg"
+              style="height:44px"></canvas>
+          </div>
+        </div>
+      </div>
+
+      <!-- Pi Live Panel -->
+      <div class="panel">
+        <div class="panel-title">
+          <div class="dot" style="background:var(--accent)"></div>Raspberry Pi Live
+        </div>
+        <div class="pi-grid">
+          <div class="pi-cell">
+            <div class="pi-cell-label">P1 Label</div>
+            <div class="pi-cell-val" id="pi-p1-label" style="color:var(--green)">—</div>
+          </div>
+          <div class="pi-cell">
+            <div class="pi-cell-label">P1 Crash%</div>
+            <div class="pi-cell-val" id="pi-p1-crash">—</div>
+          </div>
+          <div class="pi-cell">
+            <div class="pi-cell-label">P2 Label</div>
+            <div class="pi-cell-val" id="pi-p2-label">—</div>
+          </div>
+          <div class="pi-cell">
+            <div class="pi-cell-label">Det Score</div>
+            <div class="pi-cell-val" id="pi-det">—</div>
+          </div>
+          <div class="pi-cell">
+            <div class="pi-cell-label">Gates Hit</div>
+            <div class="pi-cell-val" id="pi-gates">0 / 3</div>
+          </div>
+          <div class="pi-cell">
+            <div class="pi-cell-label">Latency</div>
+            <div class="pi-cell-val" id="pi-lat">—</div>
+          </div>
+        </div>
+        <div class="verdict-chip normal" id="pi-verdict-chip">NORMAL</div>
+      </div>
+
+      <!-- Browser ML Panel -->
+      <div class="panel">
+        <div class="panel-title">
+          <div class="dot" style="background:var(--accent2)"></div>Browser ML (JS Mirror)
+        </div>
+        <div class="ml-row">
+          <div class="ml-col">
+            <div class="ml-col-title browser">In-Browser</div>
+            <div class="ml-metric"><span class="ml-metric-name">P1</span><span class="ml-metric-val" id="b-p1">—</span>
+            </div>
+            <div class="ml-metric"><span class="ml-metric-name">P2</span><span class="ml-metric-val" id="b-p2">—</span>
+            </div>
+            <div class="ml-metric"><span class="ml-metric-name">Score</span><span class="ml-metric-val"
+                id="b-det">—</span></div>
+            <div class="verdict-chip normal" id="b-verdict-chip">NORMAL</div>
+          </div>
+          <div class="ml-col">
+            <div class="ml-col-title pi">Pi Verdict</div>
+            <div class="ml-metric"><span class="ml-metric-name">P1</span><span class="ml-metric-val"
+                id="pi-p1-side">—</span></div>
+            <div class="ml-metric"><span class="ml-metric-name">P2</span><span class="ml-metric-val"
+                id="pi-p2-side">—</span></div>
+            <div class="ml-metric"><span class="ml-metric-name">Score</span><span class="ml-metric-val"
+                id="pi-det-side">—</span></div>
+            <div class="verdict-chip normal" id="pi-verdict-chip2">NORMAL</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Black Box Report -->
+      <div class="panel" id="bb-panel" style="display:none;">
+        <div class="panel-title">
+          <div class="dot" style="background:var(--danger)"></div>Black Box Report
+        </div>
+        <div class="bb-row"><span class="bb-key">Deploy Time</span><span class="bb-val danger" id="bb-deploy">—</span>
+        </div>
+        <div class="bb-row"><span class="bb-key">Onset → Deploy</span><span class="bb-val" id="bb-latency">—</span>
+        </div>
+        <div class="bb-row"><span class="bb-key">Peak ADXL (g)</span><span class="bb-val danger" id="bb-peak">—</span>
+        </div>
+        <div class="bb-row"><span class="bb-key">Peak Gyro (°/s)</span><span class="bb-val" id="bb-gyro">—</span></div>
+        <div class="bb-row"><span class="bb-key">Severity</span><span class="bb-val danger" id="bb-sev">—</span></div>
+        <div class="bb-row"><span class="bb-key">CSV Dump</span><span class="bb-val ok" id="bb-csv">Saved</span></div>
+        <div class="bb-row"><span class="bb-key">Lock File</span><span class="bb-val danger" id="bb-lock">LOCKED</span>
+        </div>
+      </div>
+
+      <!-- Back button -->
+      <div class="panel" style="margin-top:auto;">
+        <button onclick="window.location.href='index.html'"
+          style="width:100%;padding:10px;background:rgba(255,255,255,0.04);border:1px solid var(--border);border-radius:10px;color:var(--muted);font-family:'Outfit',sans-serif;font-size:13px;cursor:pointer;transition:all 0.2s;"
+          onmouseover="this.style.color='#fff'" onmouseout="this.style.color=''">← New Scenario</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- THREE.JS -->
+  <script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.158.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.158.0/examples/jsm/"}}
+</script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+    import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+    import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+    import { AfterimagePass } from 'three/addons/postprocessing/AfterimagePass.js';
+    import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+    import { SimplexNoise } from 'three/addons/math/SimplexNoise.js';
+
+    // ─── BIOME DEFINITIONS ────────────────────────────────────────────────────────
+    const BIOMES = {
+      hill_station: {
+        fog: [0x6688aa, 30, 280], sky: 0x4a7a9b, sun: 0xfff4e0, sunInt: 2.2, amb: 0x203040, ambInt: 0.6,
+        terrain: [0x2d5a2d, 0x3d7a3d, 0x4a8a4a], road: 0x2a2a2a, tree: true, rain: false, tunnel: false,
+        city: false, mist: true, snow: false, grade: 0.6, roadBanking: 0.4
+      },
+      mountain_pass: {
+        fog: [0x8899aa, 20, 200], sky: 0x2a4a6a, sun: 0xfffbe0, sunInt: 2.8, amb: 0x1a2030, ambInt: 0.4,
+        terrain: [0x4a4a4a, 0x666666, 0x888888], road: 0x333333, tree: false, rain: false, tunnel: false,
+        city: false, mist: false, snow: true, grade: 1.0, roadBanking: 0.5
+      },
+      city: {
+        fog: [0x222233, 40, 400], sky: 0x1a1a2e, sun: 0xffaa44, sunInt: 1.4, amb: 0x1a1a3a, ambInt: 0.8,
+        terrain: [0x333333, 0x222222, 0x2a2a2a], road: 0x1a1a1a, tree: false, rain: false, tunnel: false,
+        city: true, mist: false, snow: false, grade: 0.05, roadBanking: 0.05
+      },
+      highway: {
+        fog: [0xaabbcc, 80, 800], sky: 0x6688aa, sun: 0xfff8e0, sunInt: 2.5, amb: 0x203040, ambInt: 0.5,
+        terrain: [0x556644, 0x667755, 0x5a6a44], road: 0x222222, tree: false, rain: false, tunnel: false,
+        city: false, mist: false, snow: false, grade: 0.0, roadBanking: 0.0
+      },
+      night: {
+        fog: [0x000011, 15, 120], sky: 0x000010, sun: 0x334466, sunInt: 0.2, amb: 0x050510, ambInt: 0.15,
+        terrain: [0x0a0a10, 0x101018, 0x0d0d15], road: 0x0d0d0d, tree: true, rain: false, tunnel: false,
+        city: false, mist: false, snow: false, grade: 0.3, roadBanking: 0.2
+      },
+      rain: {
+        fog: [0x445566, 15, 180], sky: 0x2a3a4a, sun: 0x8899aa, sunInt: 1.0, amb: 0x1a2030, ambInt: 0.7,
+        terrain: [0x2a3a2a, 0x334433, 0x2d3d2d], road: 0x1a1a1a, tree: true, rain: true, tunnel: false,
+        city: false, mist: true, snow: false, grade: 0.4, roadBanking: 0.3
+      },
+      tunnel: {
+        fog: [0x111111, 3, 60], sky: 0x111111, sun: 0x334455, sunInt: 0.1, amb: 0x0a0a0a, ambInt: 0.2,
+        terrain: [0x222222, 0x1a1a1a, 0x1f1f1f], road: 0x0d0d0d, tree: false, rain: false, tunnel: true,
+        city: false, mist: false, snow: false, grade: 0.0, roadBanking: 0.0
+      },
+      gravel_offroad: {
+        fog: [0xbbaa88, 40, 300], sky: 0x8a9a7a, sun: 0xfffacc, sunInt: 2.0, amb: 0x302820, ambInt: 0.6,
+        terrain: [0x886644, 0x997755, 0x7a5533], road: 0x7a6a4a, tree: true, rain: false, tunnel: false,
+        city: false, mist: false, snow: false, grade: 0.5, roadBanking: 0.2
+      },
+    };
+
+    // ─── GLOBALS ─────────────────────────────────────────────────────────────────
+    const canvas = document.getElementById('world');
+    const simplex = new SimplexNoise();
+    let biome = BIOMES.hill_station;
+    let biomeKey = 'hill_station';
+    let scene, camera, renderer, composer, bloomPass, afterPass;
+    let terrain, roadMesh, bike, bikeGroup, headlightL, headlightR;
+    let roadCurve, roadPoints = [];
+    let rainParticles, rainGeo;
+    let crashParticles = [];
+    let bloomStrength = 0.4;
+    let cameraShake = { x: 0, y: 0, intensity: 0 };
+    let clock = new THREE.Clock();
+    let deployed = false;
+    let simProgress = 0;
+    let speed = 0;
+    let leanAngle = 0;
+    let impactG = 0;
+    let sensorBuf = { ax: [], ay: [], az: [], gx: [], gy: [], gz: [], hg: [] };
+    const BUF_LEN = 80;
+    let gateHits = 0;
+    let trees = [];
+    let buildings = [];
+    let tunnelWalls = null;
+    let snowParticles = null;
+
+    // ─── INIT THREE.JS ────────────────────────────────────────────────────────────
+    function initThree() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(72, 1, 0.1, 2000);
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: false });
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 1.2;
+      renderer.shadowMap.enabled = true;
+      renderer.outputColorSpace = THREE.SRGBColorSpace;
+      resize();
+      window.addEventListener('resize', resize);
+
+      composer = new EffectComposer(renderer);
+      const rPass = new RenderPass(scene, camera);
+      bloomPass = new UnrealBloomPass(new THREE.Vector2(canvas.width, canvas.height), 0.4, 0.6, 0.6);
+      afterPass = new AfterimagePass(0.85);
+      const out = new OutputPass();
+      composer.addPass(rPass);
+      composer.addPass(bloomPass);
+      composer.addPass(afterPass);
+      composer.addPass(out);
+    }
+
+    function resize() {
+      const sidebar = 340;
+      const W = window.innerWidth - sidebar;
+      const H = window.innerHeight;
+      camera.aspect = W / H;
+      camera.updateProjectionMatrix();
+      renderer.setSize(W, H);
+      composer?.setSize(W, H);
+    }
+
+    // ─── BUILD WORLD ─────────────────────────────────────────────────────────────
+    function buildWorld(b) {
+      // Clear previous world
+      while (scene.children.length) scene.remove(scene.children[0]);
+      trees = []; buildings = []; crashParticles = [];
+      tunnelWalls = null; snowParticles = null; rainParticles = null;
+
+      biome = b;
+      scene.background = new THREE.Color(b.sky);
+      scene.fog = new THREE.FogExp2(b.fog[0], 1 / b.fog[2]);
+
+      // Lighting
+      const amb = new THREE.AmbientLight(b.amb, b.ambInt);
+      scene.add(amb);
+
+      const sun = new THREE.DirectionalLight(b.sun, b.sunInt);
+      sun.position.set(60, 80, 40);
+      sun.castShadow = true;
+      sun.shadow.mapSize.setScalar(2048);
+      sun.shadow.camera.near = 1;
+      sun.shadow.camera.far = 500;
+      sun.shadow.camera.left = sun.shadow.camera.bottom = -100;
+      sun.shadow.camera.right = sun.shadow.camera.top = 100;
+      scene.add(sun);
+
+      if (b.tunnel) {
+        // Strip lights inside tunnel
+        for (let i = 0; i < 20; i++) {
+          const pt = new THREE.PointLight(0xffeedd, 1.5, 30);
+          pt.position.set(0, 3, i * 8 - 80);
+          scene.add(pt);
+        }
+      }
+      if (biomeKey === 'night') {
+        const pt = new THREE.PointLight(0x3355ff, 3, 80);
+        pt.position.set(0, 10, 0);
+        scene.add(pt);
+      }
+
+      buildRoad();
+      buildTerrain();
+      buildBike();
+
+      if (b.tree) buildTrees();
+      if (b.city) buildCity();
+      if (b.tunnel) buildTunnel();
+      if (b.rain) buildRain();
+      if (b.snow) buildSnow();
+    }
+
+    // ─── ROAD ─────────────────────────────────────────────────────────────────────
+    function buildRoad() {
+      roadPoints = [];
+      const grade = biome.grade;
+      const banking = biome.roadBanking;
+      let x = 0, y = 0, z = 0, dir = 0;
+
+      // Generate winding road path
+      for (let i = 0; i < 120; i++) {
+        roadPoints.push(new THREE.Vector3(x, y, z));
+        const turn = (simplex.noise(i * 0.05, 0) * 2 - 1) * banking;
+        dir += turn;
+        const elevation = simplex.noise(i * 0.03, 1) * grade;
+        x += Math.sin(dir) * 4;
+        z -= Math.cos(dir) * 4;
+        y += elevation * 0.3;
+      }
+
+      roadCurve = new THREE.CatmullRomCurve3(roadPoints);
+
+      // Road ribbon
+      const pts = roadCurve.getPoints(800);
+      const geo = new THREE.BufferGeometry();
+      const verts = [];
+      const uvs = [];
+      const indices = [];
+      const W = 5.5;
+
+      for (let i = 0; i < pts.length; i++) {
+        const t = i / (pts.length - 1);
+        const pt = pts[i];
+        const fwd = i < pts.length - 1
+          ? new THREE.Vector3().subVectors(pts[i + 1], pt).normalize()
+          : new THREE.Vector3().subVectors(pt, pts[i - 1]).normalize();
+        const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+        const L = pt.clone().addScaledVector(right, -W);
+        const R = pt.clone().addScaledVector(right, W);
+        verts.push(L.x, L.y, L.z, R.x, R.y, R.z);
+        uvs.push(0, t * 40, 1, t * 40);
+        if (i < pts.length - 1) {
+          const b2 = i * 2;
+          indices.push(b2, b2 + 1, b2 + 2, b2 + 1, b2 + 3, b2 + 2);
+        }
+      }
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+      geo.setIndex(indices);
+      geo.computeVertexNormals();
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: biome.road, roughness: 0.85, metalness: 0.05,
+      });
+      roadMesh = new THREE.Mesh(geo, mat);
+      roadMesh.receiveShadow = true;
+      scene.add(roadMesh);
+
+      // Lane markings
+      const laneGeo = new THREE.PlaneGeometry(0.12, 3.5);
+      const laneMat = new THREE.MeshBasicMaterial({ color: 0xddddcc });
+      for (let i = 0; i < pts.length; i += 18) {
+        const pt = pts[i];
+        const m = new THREE.Mesh(laneGeo, laneMat);
+        m.position.copy(pt);
+        m.position.y += 0.02;
+        const fwd = i < pts.length - 1
+          ? new THREE.Vector3().subVectors(pts[i + 1], pt)
+          : new THREE.Vector3().subVectors(pt, pts[i - 1]);
+        m.lookAt(pt.clone().add(fwd));
+        m.rotateX(-Math.PI / 2);
+        scene.add(m);
+      }
+    }
+
+    // ─── TERRAIN ─────────────────────────────────────────────────────────────────
+    function buildTerrain() {
+      const W = 400, H = 400, seg = 80;
+      const geo = new THREE.PlaneGeometry(W, H, seg, seg);
+      const pos = geo.attributes.position;
+      for (let i = 0; i < pos.count; i++) {
+        const x = pos.getX(i), z = pos.getZ(i);
+        const h = simplex.noise(x * 0.008, z * 0.008) * 30 +
+          simplex.noise(x * 0.02, z * 0.02) * 10 +
+          simplex.noise(x * 0.06, z * 0.06) * 3;
+        pos.setY(i, Math.max(-1, h - 5));
+      }
+      geo.computeVertexNormals();
+      const colors = biome.terrain;
+      const mat = new THREE.MeshStandardMaterial({
+        color: colors[1], roughness: 1.0, metalness: 0.0,
+      });
+      terrain = new THREE.Mesh(geo, mat);
+      terrain.rotation.x = -Math.PI / 2;
+      terrain.position.y = -1.5;
+      terrain.receiveShadow = true;
+      scene.add(terrain);
+    }
+
+    // ─── BIKE ─────────────────────────────────────────────────────────────────────
+    function buildBike() {
+      bikeGroup = new THREE.Group();
+
+      // Body
+      const bodyGeo = new THREE.BoxGeometry(0.7, 0.45, 1.8);
+      const bodyMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.3, metalness: 0.7 });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 0.55;
+      body.castShadow = true;
+      bikeGroup.add(body);
+
+      // Fairing (front shell)
+      const fairGeo = new THREE.BoxGeometry(0.6, 0.35, 0.6);
+      const fairMat = new THREE.MeshStandardMaterial({ color: 0xcc2222, roughness: 0.25, metalness: 0.6 });
+      const fairing = new THREE.Mesh(fairGeo, fairMat);
+      fairing.position.set(0, 0.65, 0.9);
+      fairing.castShadow = true;
+      bikeGroup.add(fairing);
+
+      // Wheels
+      const wGeo = new THREE.CylinderGeometry(0.35, 0.35, 0.18, 20);
+      const wMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.2 });
+      const wF = new THREE.Mesh(wGeo, wMat);
+      wF.rotation.z = Math.PI / 2;
+      wF.position.set(0, 0.35, 0.9);
+      wF.castShadow = true;
+      const wR = wF.clone();
+      wR.position.z = -0.9;
+      bikeGroup.add(wF, wR);
+
+      // Rider
+      const rGeo = new THREE.BoxGeometry(0.38, 0.7, 0.5);
+      const rMat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.7 });
+      const rider = new THREE.Mesh(rGeo, rMat);
+      rider.position.set(0, 1.0, -0.2);
+      rider.castShadow = true;
+      bikeGroup.add(rider);
+
+      // Helmet
+      const hGeo = new THREE.SphereGeometry(0.2, 16, 16);
+      const hMat = new THREE.MeshStandardMaterial({ color: 0x00aaff, roughness: 0.2, metalness: 0.5, emissive: 0x002244, emissiveIntensity: 0.3 });
+      const helmet = new THREE.Mesh(hGeo, hMat);
+      helmet.position.set(0, 1.4, -0.15);
+      helmet.castShadow = true;
+      bikeGroup.add(helmet);
+
+      // Headlights
+      headlightL = new THREE.SpotLight(0xffffff, biomeKey === 'night' ? 8 : 3, 60, Math.PI / 8, 0.4);
+      headlightL.position.set(-0.2, 0.65, 1.1);
+      const tL = new THREE.Object3D(); tL.position.set(-0.2, 0.5, 10); bikeGroup.add(tL);
+      headlightL.target = tL;
+      bikeGroup.add(headlightL);
+
+      headlightR = new THREE.SpotLight(0xffffff, biomeKey === 'night' ? 8 : 3, 60, Math.PI / 8, 0.4);
+      headlightR.position.set(0.2, 0.65, 1.1);
+      const tR = new THREE.Object3D(); tR.position.set(0.2, 0.5, 10); bikeGroup.add(tR);
+      headlightR.target = tR;
+      bikeGroup.add(headlightR);
+
+      scene.add(bikeGroup);
+    }
+
+    // ─── TREES ────────────────────────────────────────────────────────────────────
+    function buildTrees() {
+      const trunkGeo = new THREE.CylinderGeometry(0.1, 0.15, 1.5, 6);
+      const leafGeo = new THREE.ConeGeometry(0.8, 2.5, 6);
+      const trunkMat = new THREE.MeshStandardMaterial({ color: 0x4a3020, roughness: 1 });
+      const leafMat = new THREE.MeshStandardMaterial({ color: 0x1a5a20, roughness: 1 });
+
+      const pts = roadCurve.getPoints(300);
+      pts.forEach((pt, i) => {
+        if (i % 4 !== 0) return;
+        for (const side of [-1, 1]) {
+          const offset = (6 + Math.random() * 8) * side;
+          const fwd = i < pts.length - 1 ? new THREE.Vector3().subVectors(pts[i + 1], pt) : new THREE.Vector3(0, 0, -1);
+          const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+          const pos = pt.clone().addScaledVector(right, offset);
+          pos.y = terrain ? getTerrainY(pos.x, pos.z) + 1.5 : 1.5;
+
+          const g = new THREE.Group();
+          const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+          const leaf = new THREE.Mesh(leafGeo, leafMat);
+          leaf.position.y = 2.0;
+          g.add(trunk, leaf);
+          const s = 0.7 + Math.random() * 0.8;
+          g.scale.setScalar(s);
+          g.position.copy(pos);
+          g.rotation.y = Math.random() * Math.PI * 2;
+          scene.add(g);
+          trees.push(g);
+        }
+      });
+    }
+
+    // ─── CITY ─────────────────────────────────────────────────────────────────────
+    function buildCity() {
+      const pts = roadCurve.getPoints(200);
+      const colors = [0x222244, 0x1a2233, 0x2a2233, 0x332222];
+      pts.forEach((pt, i) => {
+        if (i % 8 !== 0) return;
+        for (const side of [-1, 1]) {
+          const h = 4 + Math.random() * 18;
+          const geo = new THREE.BoxGeometry(3 + Math.random() * 4, h, 3 + Math.random() * 4);
+          const mat = new THREE.MeshStandardMaterial({ color: colors[Math.floor(Math.random() * colors.length)], roughness: 0.9, metalness: 0.1 });
+          const b = new THREE.Mesh(geo, mat);
+          const fwd = i < pts.length - 1 ? new THREE.Vector3().subVectors(pts[i + 1], pt) : new THREE.Vector3(0, 0, -1);
+          const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+          b.position.copy(pt).addScaledVector(right, (10 + Math.random() * 8) * side);
+          b.position.y = h / 2;
+          scene.add(b);
+          buildings.push(b);
+
+          // Window glow
+          if (biomeKey === 'night' || biomeKey === 'city') {
+            const geoW = new THREE.BoxGeometry(2, h, 2);
+            const matW = new THREE.MeshBasicMaterial({ color: 0x334455, transparent: true, opacity: 0.3 });
+            const wm = new THREE.Mesh(geoW, matW);
+            wm.position.copy(b.position);
+            scene.add(wm);
+          }
+        }
+      });
+    }
+
+    // ─── TUNNEL ───────────────────────────────────────────────────────────────────
+    function buildTunnel() {
+      tunnelWalls = new THREE.Group();
+      const W = 6, H = 6, pts = roadCurve.getPoints(400);
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0x222222, roughness: 0.95, side: THREE.BackSide });
+      for (let i = 0; i < pts.length - 1; i++) {
+        const pt = pts[i];
+        const fwd = new THREE.Vector3().subVectors(pts[i + 1], pt).normalize();
+        const tube = new THREE.Mesh(new THREE.CylinderGeometry(H, H, 4, 8, 1, true), wallMat);
+        tube.position.copy(pt);
+        tube.lookAt(pts[i + 1]);
+        tunnelWalls.add(tube);
+      }
+      scene.add(tunnelWalls);
+    }
+
+    // ─── RAIN ─────────────────────────────────────────────────────────────────────
+    function buildRain() {
+      const N = 6000;
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) { pos[i * 3] = Math.random() * 120 - 60; pos[i * 3 + 1] = Math.random() * 40; pos[i * 3 + 2] = Math.random() * 120 - 60; }
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      rainGeo = geo;
+      const mat = new THREE.PointsMaterial({ color: 0x8888cc, size: 0.08, transparent: true, opacity: 0.5 });
+      rainParticles = new THREE.Points(geo, mat);
+      scene.add(rainParticles);
+    }
+
+    // ─── SNOW ─────────────────────────────────────────────────────────────────────
+    function buildSnow() {
+      const N = 4000;
+      const geo = new THREE.BufferGeometry();
+      const pos = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) { pos[i * 3] = Math.random() * 120 - 60; pos[i * 3 + 1] = Math.random() * 30; pos[i * 3 + 2] = Math.random() * 120 - 60; }
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({ color: 0xffffff, size: 0.15, transparent: true, opacity: 0.8 });
+      snowParticles = new THREE.Points(geo, mat);
+      scene.add(snowParticles);
+    }
+
+    // ─── CRASH VFX ────────────────────────────────────────────────────────────────
+    function triggerCrashVFX() {
+      // Bloom spike
+      bloomPass.strength = 3.5;
+
+      // Red vignette flash
+      const rv = document.getElementById('red-vignette');
+      rv.style.transition = 'opacity 0.1s'; rv.style.opacity = '1';
+      setTimeout(() => { rv.style.transition = 'opacity 1s'; rv.style.opacity = '0'; }, 300);
+
+      // Screen crack
+      const c = document.getElementById('crack-lines');
+      c.setAttribute('opacity', '1');
+      setTimeout(() => { c.setAttribute('opacity', '0'); }, 4000);
+
+      // Camera shake
+      cameraShake.intensity = 0.8;
+
+      // Spark particles
+      const geo = new THREE.BufferGeometry();
+      const N = 300;
+      const pos = new Float32Array(N * 3);
+      const vel = new Float32Array(N * 3);
+      for (let i = 0; i < N; i++) {
+        pos[i * 3] = bikeGroup.position.x; pos[i * 3 + 1] = bikeGroup.position.y + 0.5; pos[i * 3 + 2] = bikeGroup.position.z;
+        vel[i * 3] = (Math.random() - 0.5) * 0.5;
+        vel[i * 3 + 1] = Math.random() * 0.4;
+        vel[i * 3 + 2] = (Math.random() - 0.5) * 0.5;
+      }
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      const mat = new THREE.PointsMaterial({ color: 0xffaa22, size: 0.12, transparent: true });
+      const sparks = new THREE.Points(geo, mat);
+      scene.add(sparks);
+      crashParticles.push({ mesh: sparks, vel, life: 1.0 });
+
+      // Airbag bloom sphere
+      const aSphere = new THREE.Mesh(
+        new THREE.SphereGeometry(0.01, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+      );
+      aSphere.position.copy(bikeGroup.position).add(new THREE.Vector3(0, 0.8, 0.5));
+      scene.add(aSphere);
+      let aScale = 0.01;
+      const expandAirbag = () => {
+        aScale += 0.06;
+        aSphere.scale.setScalar(aScale);
+        aSphere.material.opacity = Math.max(0, 0.9 - aScale * 0.08);
+        if (aScale < 15) requestAnimationFrame(expandAirbag);
+        else { scene.remove(aSphere); bloomPass.strength = bloomStrength; }
+      };
+      expandAirbag();
+
+      // Show deploy banner
+      const banner = document.getElementById('deploy-banner');
+      banner.style.display = 'block';
+      setTimeout(() => { banner.style.display = 'none'; }, 5000);
+    }
+
+    // ─── HELPERS ──────────────────────────────────────────────────────────────────
+    function getTerrainY(x, z) {
+      return simplex.noise(x * 0.008, z * 0.008) * 30 + simplex.noise(x * 0.02, z * 0.02) * 10 - 6;
+    }
+
+    function lerpColor(a, b, t) {
+      const ca = new THREE.Color(a), cb = new THREE.Color(b);
+      return ca.lerp(cb, t).getHex();
+    }
+
+    // ─── UPDATE BIKE POSITION ─────────────────────────────────────────────────────
+    function updateBike(frame) {
+      if (!bikeGroup || !roadCurve) return;
+      simProgress = Math.min(frame.progress || simProgress + 0.0002, 0.98);
+
+      const pos = roadCurve.getPoint(simProgress);
+      const tan = roadCurve.getTangent(simProgress);
+      bikeGroup.position.copy(pos);
+      bikeGroup.position.y += 0.35;
+
+      const angle = Math.atan2(tan.x, tan.z);
+      bikeGroup.rotation.y = angle;
+
+      // Lean from ay sensor
+      const lean = -THREE.MathUtils.clamp(frame.ay * 0.04, -0.6, 0.6);
+      bikeGroup.rotation.z = THREE.MathUtils.lerp(bikeGroup.rotation.z, lean, 0.08);
+      leanAngle = Math.abs(lean * 57.3).toFixed(0);
+
+      // Camera: follow from behind and above
+      const behind = pos.clone().addScaledVector(tan, -6).add(new THREE.Vector3(0, 2.5, 0));
+      const shk = cameraShake.intensity;
+      behind.x += (Math.random() - 0.5) * shk;
+      behind.y += (Math.random() - 0.5) * shk * 0.5;
+      behind.z += (Math.random() - 0.5) * shk;
+      cameraShake.intensity = Math.max(0, shk - 0.03);
+      camera.position.lerp(behind, 0.06);
+      camera.lookAt(pos.x, pos.y + 0.5, pos.z);
+
+      // Speed from gx magnitude
+      speed = Math.min(220, Math.max(0, Math.abs(frame.gx) * 0.3 + 30));
+      impactG = Math.abs(frame.hg_az / 9.81).toFixed(1);
+    }
+
+    // ─── ANIMATE PARTICLES ────────────────────────────────────────────────────────
+    function animateParticles(dt) {
+      crashParticles = crashParticles.filter(p => {
+        p.life -= dt;
+        if (p.life <= 0) { scene.remove(p.mesh); return false; }
+        const pos = p.mesh.geometry.attributes.position.array;
+        for (let i = 0; i < pos.length; i += 3) {
+          pos[i] += p.vel[i] * dt * 60;
+          pos[i + 1] += p.vel[i + 1] * dt * 60 - 0.01;
+          pos[i + 2] += p.vel[i + 2] * dt * 60;
+        }
+        p.mesh.geometry.attributes.position.needsUpdate = true;
+        p.mesh.material.opacity = p.life;
+        return true;
+      });
+
+      if (rainParticles) {
+        const pos = rainGeo.attributes.position.array;
+        for (let i = 1; i < pos.length; i += 3) { pos[i] -= 0.25; if (pos[i] < -2) pos[i] = 40; }
+        rainGeo.attributes.position.needsUpdate = true;
+      }
+      if (snowParticles) {
+        const pos = snowParticles.geometry.attributes.position.array;
+        for (let i = 1; i < pos.length; i += 3) { pos[i] -= 0.04; if (pos[i] < -2) pos[i] = 30; }
+        snowParticles.geometry.attributes.position.needsUpdate = true;
+      }
+    }
+
+    // ─── RENDER LOOP ──────────────────────────────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      animateParticles(dt);
+      composer.render();
+    }
+
+    // ─── SPARKLINE GRAPHS ─────────────────────────────────────────────────────────
+    const sparkCtx = {};
+    function initSparklines() {
+      ['ax', 'ay', 'az', 'gx', 'gy', 'gz', 'hg'].forEach(key => {
+        const c = document.getElementById('sp-' + key);
+        if (!c) return;
+        sparkCtx[key] = c.getContext('2d');
+        c.width = c.offsetWidth || 90;
+        c.height = c.offsetHeight || 36;
+        sensorBuf[key] = new Array(BUF_LEN).fill(0);
+      });
+    }
+
+    function drawSparkline(key, val, col, minV, maxV) {
+      const buf = sensorBuf[key];
+      buf.push(val);
+      if (buf.length > BUF_LEN) buf.shift();
+      const ctx = sparkCtx[key];
+      if (!ctx) return;
+      const W = ctx.canvas.width, H = ctx.canvas.height;
+      ctx.clearRect(0, 0, W, H);
+
+      // Background
+      ctx.fillStyle = 'rgba(0,0,0,0.3)';
+      ctx.fillRect(0, 0, W, H);
+
+      // Line
+      ctx.beginPath();
+      ctx.strokeStyle = col;
+      ctx.lineWidth = 1.5;
+      buf.forEach((v, i) => {
+        const x = (i / (BUF_LEN - 1)) * W;
+        const y = H - ((v - minV) / (maxV - minV + 0.001)) * H;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      // Fill
+      ctx.lineTo(W, H); ctx.lineTo(0, H);
+      ctx.fillStyle = col.replace('rgb', 'rgba').replace(')', ',0.08)');
+      ctx.fill();
+    }
+
+    function updateSparklines(f) {
+      drawSparkline('ax', f.ax, '#00d4ff', -30, 30);
+      drawSparkline('ay', f.ay, '#7c3aed', -30, 30);
+      drawSparkline('az', f.az, '#10b981', -30, 30);
+      drawSparkline('gx', f.gx, '#f59e0b', -500, 500);
+      drawSparkline('gy', f.gy, '#ef4444', -500, 500);
+      drawSparkline('gz', f.gz, '#8b5cf6', -500, 500);
+      drawSparkline('hg', f.hg_az, '#ff3b5c', -2500, 2500);
+    }
+
+    // ─── HUD UPDATES ─────────────────────────────────────────────────────────────
+    function updateHUD(label) {
+      const badge = document.getElementById('event-badge');
+      const labels = ['NORMAL', 'NEAR-CRASH', 'CRASH'];
+      const classes = ['', 'near-crash', 'crash'];
+      badge.textContent = labels[label] || 'NORMAL';
+      badge.className = classes[label] || '';
+      document.getElementById('g-speed').textContent = Math.round(speed);
+      document.getElementById('g-lean').textContent = leanAngle + '°';
+      document.getElementById('g-g').textContent = impactG + 'g';
+
+      // Bloom intensity by label
+      bloomPass.strength = label === 2 ? 2.0 : label === 1 ? 0.8 : bloomStrength;
+      // Afterimage intensity by speed
+      afterPass.uniforms['damp'].value = speed > 100 ? 0.92 : speed > 60 ? 0.87 : 0.80;
+    }
+
+    function updateGates(n) {
+      gateHits = n;
+      for (let i = 0; i < 3; i++) {
+        const el = document.getElementById('gate' + i);
+        if (el) el.className = 'gate' + (i < n ? ' hit' : '');
+      }
+      document.getElementById('pi-gates').textContent = `${n} / 3`;
+    }
+
+    // ─── BROWSER ML (simplified mirror) ──────────────────────────────────────────
+    let mlBuffer = [];
+    function runBrowserML(f) {
+      mlBuffer.push(f);
+      if (mlBuffer.length > 30) mlBuffer.shift();
+      const avgG = mlBuffer.reduce((s, x) => s + Math.abs(x.hg_az), 0) / mlBuffer.length;
+      const maxG = Math.max(...mlBuffer.map(x => Math.abs(x.hg_az)));
+      let p1 = 0, p2 = 0, score = 0;
+      if (maxG > 300) { p1 = 2; p2 = 2; score = 1.0; }
+      else if (maxG > 50 || avgG > 20) { p1 = 1; p2 = 1; score = 0.5; }
+      score = +(maxG / 500).toFixed(2);
+
+      const LABELS = ['NORMAL', 'NEAR-CRASH', 'CRASH'];
+      const chip_b = document.getElementById('b-verdict-chip');
+      document.getElementById('b-p1').textContent = LABELS[p1];
+      document.getElementById('b-p2').textContent = LABELS[p2];
+      document.getElementById('b-det').textContent = score.toFixed(2);
+      chip_b.className = 'verdict-chip ' + (p2 === 2 ? 'crash' : p2 === 1 ? 'near' : 'normal');
+      chip_b.textContent = LABELS[p2];
+
+      return { p1, p2, score };
+    }
+
+    // ─── WEBSOCKET ────────────────────────────────────────────────────────────────
+    let ws;
+    let firstFrameReceived = false;
+
+    function connectWS() {
+      const wsUrl = 'ws://' + location.host + '/ws';
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'browser_connect' }));
+        document.getElementById('badge-ws').textContent = 'Connected';
+        document.getElementById('badge-ws').className = 'conn-badge ok';
+      };
+
+      ws.onclose = () => {
+        document.getElementById('badge-ws').textContent = 'Offline';
+        document.getElementById('badge-ws').className = 'conn-badge off';
+        setTimeout(connectWS, 3000);
+      };
+
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+
+        if (msg.type === 'server_hello') {
+          if (msg.pi_connected) setPiBadge(true);
+        }
+
+        if (msg.type === 'pi_status') setPiBadge(msg.connected);
+
+        if (msg.type === 'playback_start') {
+          const bk = msg.biome || 'hill_station';
+          biomeKey = bk;
+          buildWorld(BIOMES[bk] || BIOMES.hill_station);
+          firstFrameReceived = false;
+          document.getElementById('badge-scenario').textContent = msg.scenario || bk;
+          document.getElementById('badge-scenario').className = 'conn-badge warn';
+          document.getElementById('bb-panel').style.display = 'none';
+          deployed = false;
+        }
+
+        if (msg.type === 'sensor_frame') {
+          if (!firstFrameReceived) { firstFrameReceived = true; document.getElementById('badge-scenario').className = 'conn-badge ok'; }
+          updateBike(msg);
+          updateSparklines(msg);
+          updateHUD(msg.label);
+          document.getElementById('progress-bar').style.width = (msg.progress * 100) + '%';
+          document.getElementById('tl-fill').style.width = (msg.progress * 100) + '%';
+          runBrowserML(msg);
+        }
+
+        if (msg.type === 'pi_verdict') {
+          const LABELS = ['NORMAL', 'NEAR-CRASH', 'CRASH'];
+          const v = msg;
+          const p1 = v.p1_label ?? 0;
+          const p2 = v.p2_label ?? 0;
+
+          document.getElementById('pi-p1-label').textContent = LABELS[p1];
+          document.getElementById('pi-p1-crash').textContent = ((v.p1_crash || 0) * 100).toFixed(0) + '%';
+          document.getElementById('pi-p2-label').textContent = LABELS[p2];
+          document.getElementById('pi-det').textContent = (v.det_score || 0).toFixed(3);
+          document.getElementById('pi-lat').textContent = (v.latency_ms || 0).toFixed(1) + 'ms';
+          document.getElementById('pi-p1-side').textContent = LABELS[p1];
+          document.getElementById('pi-p2-side').textContent = LABELS[p2];
+          document.getElementById('pi-det-side').textContent = (v.det_score || 0).toFixed(3);
+
+          const chip = document.getElementById('pi-verdict-chip');
+          chip.className = 'verdict-chip ' + (p2 === 2 ? 'crash' : p2 === 1 ? 'near' : 'normal');
+          chip.textContent = LABELS[p2];
+          const chip2 = document.getElementById('pi-verdict-chip2');
+          chip2.className = chip.className;
+          chip2.textContent = chip.textContent;
+
+          updateGates(v.gate_count || 0);
+
+          if (v.deployed && !deployed) {
+            deployed = true;
+            triggerCrashVFX();
+            showBlackBox(v);
+          }
+        }
+
+        if (msg.type === 'playback_done') {
+          document.getElementById('badge-scenario').textContent = 'Complete';
+        }
+      };
+    }
+
+    function setPiBadge(on) {
+      document.getElementById('badge-pi').textContent = on ? 'Connected' : 'Not connected';
+      document.getElementById('badge-pi').className = 'conn-badge ' + (on ? 'ok' : 'off');
+    }
+
+    function showBlackBox(v) {
+      document.getElementById('bb-panel').style.display = 'block';
+      document.getElementById('bb-deploy').textContent = (v.deploy_ts || 0).toFixed(0) + 'ms';
+      document.getElementById('bb-latency').textContent = (v.latency_ms || 0).toFixed(0) + 'ms';
+      document.getElementById('bb-peak').textContent = (v.peak_g || 0).toFixed(1) + 'g';
+      document.getElementById('bb-gyro').textContent = (v.peak_gyro || 0).toFixed(0) + '°/s';
+      document.getElementById('bb-sev').textContent = v.severity || 'SEVERE';
+    }
+
+    // ─── BOOT ─────────────────────────────────────────────────────────────────────
+    // Read biome + csv path from URL params (set by index.html after generation)
+    const _params = new URLSearchParams(location.search);
+    biomeKey = _params.get('biome') || 'hill_station';
+    const _scenario = _params.get('scenario') || '';
+    const _csvPath = _params.get('csv') || '';
+
+    initThree();
+    buildWorld(BIOMES[biomeKey] || BIOMES.hill_station);
+    initSparklines();
+    camera.position.set(0, 5, 12);
+    animate();
+    connectWS();
+
+    // Auto-request playback as soon as WebSocket is open
+    const _waitWS = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        clearInterval(_waitWS);
+        ws.send(JSON.stringify({
+          type: 'start_playback',
+          biome: biomeKey,
+          scenario: _scenario,
+          csv_path: _csvPath,
+        }));
+      }
+    }, 200);
+  </script>
+</body>
+
+</html>

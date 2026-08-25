@@ -233,6 +233,32 @@ class SyntheticIMUStream:
         pass
 
 
+class DeteriorationAnalyzer:
+    """
+    Tracks Path-1 per-sample predictions over a rolling 20ms window 
+    to detect if rider dynamics are deteriorating or recovering.
+    """
+    def __init__(self, history_len=20):
+        self.history = deque(maxlen=history_len)
+
+    def update(self, p1_label: int, crash_prob: float, near_prob: float):
+        weight = 1.0 if p1_label == 2 else (0.5 if p1_label == 1 else 0.0)
+        self.history.append(weight)
+
+        n = len(self.history)
+        det_score = sum(self.history) / n
+
+        if n >= 4:
+            half = n // 2
+            recent_avg = sum(list(self.history)[half:]) / (n - half)
+            older_avg  = sum(list(self.history)[:half]) / half
+            trend = recent_avg - older_avg
+        else:
+            trend = 0.0
+
+        return det_score, trend
+
+
 # -----------------------------------------------
 #  MAIN INFERENCE LOOP
 # -----------------------------------------------
@@ -241,27 +267,32 @@ def run_inference_loop(
     model,
     meta: dict,
     stream,
+    sample_model=None,          # PATH-1: per-sample instant ML model
+    sample_model_meta=None,     # PATH-1 metadata (feature names)
     hardware: bool  = False,
     verbose: bool   = True,
-    max_samples: int = 0,    # 0 = run until Ctrl+C or stream ends
+    max_samples: int = 0,       # 0 = run until Ctrl+C or stream ends
 ):
     """
-    Core real-time inference loop.
-
-    Reads samples one by one from `stream`, maintains a rolling buffer of
-    WINDOW_SIZE samples, and evaluates an ML window every STRIDE samples.
-
-    Safety gate:
-        Airbag fires only after CONSECUTIVE_WINDOWS_REQ consecutive windows
-        all predict Crash above CRASH_PROB_THRESHOLD.
+    Core real-time inference loop with Deterioration Tracking.
     """
     feature_names      = meta.get("feature_names", [])
-    buffer             = deque(maxlen=WINDOW_SIZE * 2)  # Circular buffer
+    buffer             = deque(maxlen=WINDOW_SIZE * 2)  # Circular buffer for ML windowing
     samples_since_pred = 0
     consecutive_crash  = 0
     deploy_fired       = is_deployed()
     n_windows          = 0
     n_samples          = 0
+    deterioration      = DeteriorationAnalyzer(history_len=20)
+
+    # -----------------------------------------------------------------
+    # BLACK BOX: rolling 60-second recorder
+    # Stores every raw sample + its ML prediction label.
+    # -----------------------------------------------------------------
+    BLACKBOX_SECONDS   = 60
+    BLACKBOX_MAX       = SAMPLE_RATE_HZ * BLACKBOX_SECONDS  # 60,000 entries
+    BLACKBOX_MIN_RATIO = 0.05   # 5% of last-60s windows must be Crash or NC
+    blackbox           = deque(maxlen=BLACKBOX_MAX)  # each entry: dict
 
     if deploy_fired:
         log.error("Airbag already deployed (lock file exists). Reset lock to restart.")
@@ -286,6 +317,70 @@ def run_inference_loop(
         buffer.append(sample)
         n_samples     += 1
         samples_since_pred += 1
+
+        # --- BLACK BOX: store every raw sample immediately ----------------
+        blackbox.append({
+            **{k: sample.get(k) for k in ALL_COLS},
+            "pred_label" : None,   # filled in after ML runs
+            "crash_prob" : None,
+            "near_prob"  : None,
+            "fast_label" : None,   # PATH-1 per-sample prediction
+            "fast_crash" : None,
+        })
+
+        # ================================================================
+        # PATH 1: PER-SAMPLE ML — runs on every single new reading
+        # No windowing needed. Catches crashes in the first 50ms.
+        # ================================================================
+        if sample_model is not None and sample_model_meta is not None:
+            fast_feats = sample_model_meta.get("feature_names", SENSOR_COLS + HG_COLS)
+            fast_row   = pd.DataFrame([[sample.get(f, 0.0) for f in fast_feats]],
+                                       columns=fast_feats)
+            fast_label = int(sample_model.predict(fast_row)[0])
+            if hasattr(sample_model, "predict_proba"):
+                fast_proba      = sample_model.predict_proba(fast_row)[0]
+                while len(fast_proba) < 3:
+                    fast_proba = np.append(fast_proba, 0.0)
+                fast_crash_prob = float(fast_proba[2])
+                fast_nc_prob    = float(fast_proba[1])
+            else:
+                fast_crash_prob = 1.0 if fast_label == 2 else 0.0
+                fast_nc_prob    = 1.0 if fast_label == 1 else 0.0
+
+            # Tag black box entry with PATH-1 result
+            if blackbox:
+                blackbox[-1]["fast_label"] = fast_label
+                blackbox[-1]["fast_crash"] = round(fast_crash_prob, 4)
+
+            # --- DETERIORATION TRACKER (Path-1 Trend Analysis) ---
+            det_score, trend = deterioration.update(fast_label, fast_crash_prob, fast_nc_prob)
+
+            if verbose and (fast_label > 0 or det_score > 0.2):
+                fast_name = {1: "Near-Crash", 2: "CRASH"}.get(fast_label, "Normal")
+                log.info(
+                    f"[PATH-1 SENTINEL] {fast_name:<11} | "
+                    f"DetScore={det_score:.2f} | Trend={trend:+.2f} | "
+                    f"crash={fast_crash_prob:.1%}"
+                )
+
+            # PATH-1 immediate near-crash warning (no gate needed — per-sample)
+            if fast_label == 1 and hardware:
+                gpio_pulse_warning()
+
+            # DYNAMIC GATE ACCELERATION: If dynamics rapidly deteriorate
+            if trend >= 0.25 or det_score >= 0.40:
+                log.warning(
+                    f"[SENTINEL ALERT] Deteriorating trend detected (Score={det_score:.2f}, Trend={trend:+.2f})! "
+                    f"Accelerating window gate."
+                )
+                if consecutive_crash == 0:
+                    consecutive_crash = 2   # BYPASS 2 windows -> deploy on NEXT window confirmation!
+
+            # RECOVERY REJECTION: If dynamics are recovering back to normal
+            elif trend <= -0.20 and consecutive_crash > 0:
+                log.info(f"[SENTINEL RECOVERY] Rider dynamics stabilizing (Trend={trend:+.2f}). Resetting gate.")
+                consecutive_crash = 0
+
 
         # Only evaluate when we have enough samples AND at stride boundary
         if len(buffer) >= WINDOW_SIZE and samples_since_pred >= STRIDE:
@@ -316,6 +411,12 @@ def run_inference_loop(
             n_windows += 1
             t_elapsed  = time.perf_counter() - t_start
 
+            # --- BLACK BOX: tag the latest entry with the ML prediction ---
+            if blackbox:
+                blackbox[-1]["pred_label"] = pred_label
+                blackbox[-1]["crash_prob"] = round(crash_prob, 4)
+                blackbox[-1]["near_prob"]  = round(nc_prob, 4)
+
             if verbose:
                 sym = {0: "O", 1: "!", 2: "X"}.get(pred_label, "?")
                 log.info(
@@ -339,18 +440,68 @@ def run_inference_loop(
                     f"(p={crash_prob:.1%})"
                 )
                 if consecutive_crash >= CONSECUTIVE_WINDOWS_REQ and not deploy_fired:
-                    log.critical(
-                        f"AIRBAG DEPLOY! {consecutive_crash} consecutive crash windows. "
-                        f"Infer latency={infer_ms:.2f}ms"
-                    )
-                    set_deployed_lock()
-                    deploy_fired = True
-                    if hardware:
-                        gpio_fire_airbag()
-                        send_sms_alert(
-                            f"CRASH at t={int(t_elapsed*1000)}ms | "
-                            f"p={crash_prob:.1%} | infer={infer_ms:.1f}ms"
+
+                    # -------------------------------------------------------
+                    # BLACK BOX VALIDATION: before deploying, check the last
+                    # 60 s of ML history to rule out an isolated false spike.
+                    # -------------------------------------------------------
+                    bb_list = list(blackbox)
+                    # Only entries that have a prediction yet
+                    bb_predicted = [e for e in bb_list if e["pred_label"] is not None]
+                    if bb_predicted:
+                        crash_or_nc = sum(
+                            1 for e in bb_predicted
+                            if e["pred_label"] in (1, 2)   # 1=Near-Crash, 2=Crash
                         )
+                        bb_ratio = crash_or_nc / len(bb_predicted)
+                    else:
+                        bb_ratio = 1.0  # no history yet → trust the trigger
+
+                    log.warning(
+                        f"[BLACKBOX VALIDATION] Last {len(bb_predicted)} predictions: "
+                        f"Crash/NC ratio = {bb_ratio:.1%} "
+                        f"(min required: {BLACKBOX_MIN_RATIO:.0%})"
+                    )
+
+                    if bb_ratio >= BLACKBOX_MIN_RATIO:
+                        # ✅ CONFIRMED CRASH — deploy airbag
+                        log.critical(
+                            f"AIRBAG DEPLOY! {consecutive_crash} consecutive crash windows. "
+                            f"BlackBox ratio={bb_ratio:.1%}. Infer latency={infer_ms:.2f}ms"
+                        )
+                        set_deployed_lock()
+                        deploy_fired = True
+
+                        # Dump full 60-second black box to a timestamped CSV
+                        import csv as _csv
+                        import datetime as _dt
+                        os.makedirs(os.path.join(project_root, "logs"), exist_ok=True)
+                        dump_path = os.path.join(
+                            project_root, "logs",
+                            f"blackbox_crash_{_dt.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+                        )
+                        with open(dump_path, "w", newline="") as _f:
+                            if bb_list:
+                                _w = _csv.DictWriter(_f, fieldnames=bb_list[0].keys())
+                                _w.writeheader()
+                                _w.writerows(bb_list)
+                        log.info(f"[BLACKBOX] Crash dump saved → {dump_path}")
+
+                        if hardware:
+                            gpio_fire_airbag()
+                            send_sms_alert(
+                                f"CRASH at t={int(t_elapsed*1000)}ms | "
+                                f"p={crash_prob:.1%} | BB_ratio={bb_ratio:.0%} | infer={infer_ms:.1f}ms"
+                            )
+                    else:
+                        # ❌ FALSE POSITIVE — isolated spike, do NOT deploy
+                        log.warning(
+                            f"[BLACKBOX] FALSE POSITIVE suppressed! "
+                            f"Trigger fired but only {bb_ratio:.1%} of last 60s was Crash/NC. "
+                            f"Resetting consecutive counter."
+                        )
+                        consecutive_crash = 0  # reset so it can re-evaluate
+
             else:
                 consecutive_crash = 0   # Reset on non-crash window
 
@@ -389,20 +540,32 @@ def main():
     parser.add_argument("--max",        type=int, default=0,      help="Max samples to process (0=unlimited)")
     args = parser.parse_args()
 
-    # Load model
+    # ---- Load WINDOW model (Path 2 — 50ms window, high accuracy) --------
     model_path = os.path.join(args.model_dir, "best_model.pkl")
     meta_path  = os.path.join(args.model_dir, "model_meta.pkl")
-
     if not os.path.exists(model_path):
-        log.error(f"Model not found: {model_path}")
+        log.error(f"Window model not found: {model_path}")
         log.error("Run: python src/train_model.py")
         sys.exit(1)
-
     model = joblib.load(model_path)
     meta  = joblib.load(meta_path) if os.path.exists(meta_path) else {}
-    log.info(f"Model loaded: {meta.get('model_name','?')} | "
-             f"Acc={meta.get('accuracy',0):.4f} | "
-             f"F1={meta.get('f1_macro',0):.4f}")
+    log.info(f"[PATH-2 WINDOW MODEL] {meta.get('model_name','RF')} | "
+             f"Acc={meta.get('accuracy',0):.4f} | F1={meta.get('f1_macro',0):.4f}")
+
+    # ---- Load SAMPLE model (Path 1 — per-sample, instant) ---------------
+    sample_model_path = os.path.join(args.model_dir, "sample_model.pkl")
+    sample_meta_path  = os.path.join(args.model_dir, "sample_model_meta.pkl")
+    sample_model      = None
+    sample_meta       = None
+    if os.path.exists(sample_model_path):
+        sample_model = joblib.load(sample_model_path)
+        sample_meta  = joblib.load(sample_meta_path) if os.path.exists(sample_meta_path) else {}
+        log.info(f"[PATH-1 SAMPLE MODEL] Loaded | "
+                 f"Acc={sample_meta.get('accuracy',0):.4f} | "
+                 f"F1={sample_meta.get('macro_f1',0):.4f}")
+    else:
+        log.warning("[PATH-1] sample_model.pkl not found — per-sample ML disabled. "
+                    "Run: python src/train_sample_model.py")
 
     # Initialize GPIO (if hardware mode)
     if args.hardware:
@@ -424,12 +587,14 @@ def main():
 
     try:
         run_inference_loop(
-            model    = model,
-            meta     = meta,
-            stream   = stream,
-            hardware = args.hardware,
-            verbose  = not args.no_verbose,
-            max_samples = args.max,
+            model             = model,
+            meta              = meta,
+            stream            = stream,
+            sample_model      = sample_model,
+            sample_model_meta = sample_meta,
+            hardware          = args.hardware,
+            verbose           = not args.no_verbose,
+            max_samples       = args.max,
         )
     finally:
         stream.close()

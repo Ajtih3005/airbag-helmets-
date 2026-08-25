@@ -52,7 +52,7 @@ def clear_line():
 
 def prob_bar(p: float, width: int = 30) -> str:
     filled = int(p * width)
-    bar    = "█" * filled + "░" * (width - filled)
+    bar    = "#" * filled + "-" * (width - filled)
     if p > 0.7:
         color = "\033[91m"  # Red
     elif p > 0.4:
@@ -65,7 +65,7 @@ def prob_bar(p: float, width: int = 30) -> str:
 def draw_header(meta: dict):
     os.system("cls" if os.name == "nt" else "clear")
     print(f"{BOLD}{'='*70}{RESET}")
-    print(f"{BOLD}  SMART AIRBAG HELMET — LIVE MONITORING DASHBOARD{RESET}")
+    print(f"  SMART AIRBAG HELMET - LIVE MONITORING DASHBOARD{RESET}")
     print(f"{'='*70}")
     print(f"  Model     : {meta.get('model_name','?')}  |  "
           f"Acc={meta.get('accuracy',0):.1%}  |  "
@@ -98,7 +98,7 @@ def draw_state(result: dict, t_ms: int, consecutive: int, n_windows: int):
     else:
         print()
 
-    print(f"  {'─'*60}")
+    print(f"  {'-'*60}")
 
 
 def run_dashboard(model, meta, stream, hardware=False, verbose=True):

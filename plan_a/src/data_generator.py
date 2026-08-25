@@ -1,4 +1,4 @@
-﻿"""
+"""
 data_generator.py
 -----------------
 Synthetic IMU time-series generator for Smart Airbag Helmet project.
@@ -26,10 +26,11 @@ from typing import List, Tuple
 #  TIMING CONSTANTS (shared across all modules)
 # -------------------------------------------------
 SAMPLE_RATE_HZ = 1000          # Sensor sampling frequency (spec: >=1000 Hz)
-WINDOW_MS      = 200           # Feature window duration in ms (spec: 200 ms)
-WINDOW_SIZE    = int(SAMPLE_RATE_HZ * WINDOW_MS / 1000)   # = 200 samples
-STRIDE_MS      = 100           # Stride between windows in ms
-STRIDE         = int(SAMPLE_RATE_HZ * STRIDE_MS / 1000)   # = 100 samples
+WINDOW_MS      = 50            # Feature window duration in ms (spec: 50 ms)
+WINDOW_SIZE    = int(SAMPLE_RATE_HZ * WINDOW_MS / 1000)   # = 50 samples
+STRIDE_MS      = 1             # Continuous stride between windows in ms (1 ms)
+STRIDE         = int(SAMPLE_RATE_HZ * STRIDE_MS / 1000)   # = 1 sample
+
 
 # -------------------------------------------------
 #  LABEL MAP  (3-class per project spec)
@@ -201,7 +202,7 @@ def generate_session(session_id, session_duration_ms=2000, rng=None):
 # -------------------------------------------------
 
 def generate_dataset(n_sessions=300, session_duration_ms=2000,
-                     seed=42, save_path=None, verbose=True):
+                     seed=None, save_path=None, verbose=True):
     """
     Generate full dataset of n_sessions riding sessions.
     Default: 300 sessions x 2000 ms = 600,000 samples at 1000 Hz.
