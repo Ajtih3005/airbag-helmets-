@@ -125,7 +125,7 @@ class ActuatorEngine:
             except Exception as e:
                 print(f"[WARNING LED ERROR] {e}")
         else:
-            print(f"  [⚠️ BUZZER] Near-Crash Warning Pulsed ({pulse_ms}ms)")
+            print(f"  [BUZZER] Near-Crash Warning Pulsed ({pulse_ms}ms)")
 
     # ─── Emergency SMS ─────────────────────────────────────────────────────────
 

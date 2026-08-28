@@ -30,6 +30,26 @@ LABEL_MAP = {0: "Normal", 1: "Near-Crash", 2: "Crash"}
 
 SENSOR_COLS = ["ax", "ay", "az", "gx", "gy", "gz", "hg_ax", "hg_ay", "hg_az"]
 
+# Human-readable phase names used in scenario_manifest.json and phase column
+PHASE_LABELS = {
+    "normal":          "Normal",
+    "highway":         "Normal",
+    "city":            "Normal",
+    "accel":           "Normal",
+    "rain":            "Normal",
+    "pothole":         "Near-Crash",
+    "swerve":          "Near-Crash",
+    "brake":           "Near-Crash",
+    "gravel":          "Near-Crash",
+    "near_crash":      "Near-Crash",
+    "pre_crash":       "Pre-Crash",
+    "crash":           "Crash",
+    "highside":        "Crash",
+    "lowside":         "Crash",
+    "front_collision": "Crash",
+    "rear_collision":  "Crash",
+}
+
 
 # =================================================
 #  BASE SIGNAL GENERATORS  (label-level)
@@ -82,6 +102,37 @@ def _near_crash(n, rng):
     hg_ax = ax * rng.uniform(1.0, 2.5, n)
     hg_ay = ay * rng.uniform(1.0, 2.5, n)
     hg_az = az * rng.uniform(0.9, 1.3, n)
+    return dict(ax=ax, ay=ay, az=az, gx=gx, gy=gy, gz=gz,
+                hg_ax=hg_ax, hg_ay=hg_ay, hg_az=hg_az)
+
+
+def _pre_crash(n, rng):
+    """
+    Pre-crash onset (200-400 ms window before full impact).
+    Models the physics just before the impact spike:
+      - Gyro begins oscillating (loss of control starts)
+      - ax jerk ramp building up (deceleration onset)
+      - hg sensors slightly elevated (early vibration)
+    Label: 1 (Near-Crash — ML must infer crash is imminent from this)
+    """
+    ax = rng.normal(0.0,  0.3, n)
+    ay = rng.normal(0.0,  0.4, n)
+    az = rng.normal(9.81, 0.5, n)
+    gx = rng.normal(0.0,  8.0, n)
+    gy = rng.normal(0.0,  8.0, n)
+    gz = rng.normal(0.0,  8.0, n)
+    # Ramp-up: linearly growing jerk in ax (deceleration building)
+    ramp = np.linspace(0.0, 1.0, n)
+    ax  += ramp * rng.uniform(4.0, 9.0) * rng.choice([-1, 1])
+    # Gyro oscillation — loss-of-control onset
+    t  = np.linspace(0, 4 * np.pi, n)
+    gx += np.sin(t) * rng.uniform(20, 60)
+    gy += np.cos(t * 1.3) * rng.uniform(15, 45)
+    gz += np.sin(t * 0.7) * rng.uniform(10, 35) * rng.choice([-1, 1])
+    # ADXL slightly elevated — early vibration
+    hg_ax = ax * rng.uniform(1.2, 2.5, n)
+    hg_ay = ay * rng.uniform(1.2, 2.5, n)
+    hg_az = az + rng.normal(0.0, 2.5, n)
     return dict(ax=ax, ay=ay, az=az, gx=gx, gy=gy, gz=gz,
                 hg_ax=hg_ax, hg_ay=hg_ay, hg_az=hg_az)
 
@@ -232,6 +283,9 @@ EVENT_REGISTRY = {
     "brake":           (_event_brake,         1),
     "gravel":          (_event_gravel,        1),
 
+    # Pre-crash onset (label 1 — ML must infer impending crash from precursors)
+    "pre_crash":       (_pre_crash,           1),
+
     # Crash events (label 2)
     "crash":           (_crash,               2),
     "highside":        (_event_highside,      2),
@@ -276,6 +330,7 @@ def generate_from_segments(segments, rng=None):
         event_name   = seg.get("event", "normal").lower().replace(" ", "_").replace("-", "_")
         duration_ms  = int(seg.get("duration_ms", 500))
         n_samples    = int(SAMPLE_RATE_HZ * duration_ms / 1000)
+        phase_label  = PHASE_LABELS.get(event_name, "Normal")
 
         if n_samples <= 0:
             continue
@@ -286,6 +341,7 @@ def generate_from_segments(segments, rng=None):
             # Unknown event: fallback to normal
             print(f"[WARNING] Unknown event '{event_name}' — using Normal.")
             gen_fn, label = _normal, 0
+            phase_label = "Normal"
 
         sig = gen_fn(n_samples, rng)
 
@@ -303,6 +359,7 @@ def generate_from_segments(segments, rng=None):
                 "hg_az":        round(float(sig["hg_az"][i]), 4),
                 "label":        label,
                 "label_name":   LABEL_MAP[label],
+                "phase":        phase_label,
             })
             t_ms += dt_ms
 

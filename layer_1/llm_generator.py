@@ -35,6 +35,8 @@ VALID_EVENTS = {
     "normal", "highway", "city", "accel", "rain",
     # Near-Crash (label 1)
     "pothole", "swerve", "brake", "gravel",
+    # Pre-Crash onset (label 1 — must precede every crash segment)
+    "pre_crash",
     # Crash (label 2)
     "crash", "highside", "lowside", "front_collision", "rear_collision",
 }
@@ -82,6 +84,7 @@ into a sequence of riding segments. Each segment is one of the following named e
 
 NORMAL (label 0):  normal, highway, city, accel, rain
 NEAR-CRASH (label 1): pothole, swerve, brake, gravel
+PRE-CRASH ONSET (label 1): pre_crash  — REQUIRED: always insert this for 200-400ms before ANY crash segment
 CRASH (label 2): crash, highside, lowside, front_collision, rear_collision
 
 You MUST respond with ONLY a valid JSON array. Each element must have exactly two keys:
@@ -90,16 +93,19 @@ You MUST respond with ONLY a valid JSON array. Each element must have exactly tw
 
 Rules:
 - Always start with a normal/highway/city segment.
-- If the scenario ends with a crash, the crash segment should be the last one.
+- MANDATORY: Before EVERY crash event you MUST insert a "pre_crash" segment of 200-400ms.
+  This represents the pre-impact onset phase (gyro oscillation + ax jerk buildup before full impact).
+- The crash segment should always be the last one.
 - Total duration should be realistic (1000ms to 15000ms total).
 - Do NOT include any explanation, markdown, or text outside the JSON array.
 
 Example output:
 [
-  {"event": "highway",  "duration_ms": 1500},
-  {"event": "pothole",  "duration_ms": 400},
-  {"event": "normal",   "duration_ms": 800},
-  {"event": "crash",    "duration_ms": 500}
+  {"event": "highway",   "duration_ms": 1500},
+  {"event": "pothole",   "duration_ms": 400},
+  {"event": "normal",    "duration_ms": 800},
+  {"event": "pre_crash", "duration_ms": 300},
+  {"event": "crash",     "duration_ms": 500}
 ]
 """
 
@@ -159,6 +165,8 @@ def _keyword_fallback(prompt: str) -> list[dict]:
     segments = []
     for event in unique_events:
         if event in {"crash", "highside", "lowside", "front_collision", "rear_collision"}:
+            # Always inject pre_crash before crash
+            segments.append({"event": "pre_crash", "duration_ms": 300})
             dur = 3000
         elif event in {"pothole", "swerve", "brake", "gravel"}:
             dur = 3500
@@ -170,7 +178,7 @@ def _keyword_fallback(prompt: str) -> list[dict]:
 
 
 def _validate_segments(segments: list) -> list[dict]:
-    """Validate and sanitize a list of segment dicts."""
+    """Validate, sanitize, and ensure pre_crash is injected before every crash segment."""
     clean = []
     for seg in segments:
         if not isinstance(seg, dict):
@@ -181,7 +189,17 @@ def _validate_segments(segments: list) -> list[dict]:
             continue
         duration_ms = max(500, min(15000, int(seg.get("duration_ms", 9000))))
         clean.append({"event": event, "duration_ms": duration_ms})
-    return clean if clean else [{"event": "highway", "duration_ms": 1000}]
+
+    # Ensure pre_crash exists before every crash event
+    result = []
+    for seg in clean:
+        if seg["event"] in _CRASH_EVENTS:
+            # Check if previous segment was already pre_crash
+            if not result or result[-1]["event"] != "pre_crash":
+                result.append({"event": "pre_crash", "duration_ms": 300})
+        result.append(seg)
+
+    return result if result else [{"event": "highway", "duration_ms": 1000}]
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────

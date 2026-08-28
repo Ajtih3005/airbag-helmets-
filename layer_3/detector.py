@@ -82,6 +82,8 @@ class Layer3Detector:
         candidate_dirs = [
             os.path.join(LAYER3_DIR, "models"),
             os.path.join(ROOT_DIR, "models"),
+            os.path.join(ROOT_DIR, "plan_a", "models"),
+            os.path.join(ROOT_DIR, "layer_pi", "models"),
             self.model_dir
         ]
         target_dir = None

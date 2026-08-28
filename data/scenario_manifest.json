@@ -1,0 +1,26 @@
+{
+  "segments": [
+    {
+      "event": "highway",
+      "duration_ms": 32700
+    },
+    {
+      "event": "pre_crash",
+      "duration_ms": 300
+    },
+    {
+      "event": "front_collision",
+      "duration_ms": 3000
+    }
+  ],
+  "timeline": {
+    "normal_start_ms": 0,
+    "pre_crash_ms": 32700,
+    "crash_ms": 33000,
+    "end_ms": 36000
+  },
+  "crash_known_at_ms": 33000,
+  "pre_crash_known_at_ms": 32700,
+  "total_samples": 36000,
+  "sample_rate_hz": 1000
+}

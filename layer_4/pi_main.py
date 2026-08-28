@@ -26,6 +26,12 @@ import time
 import logging
 import pandas as pd
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT_DIR, "layer_3"))
 sys.path.insert(0, os.path.join(ROOT_DIR, "layer_4"))

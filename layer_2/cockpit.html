@@ -98,11 +98,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Ou
 .verdict.near{color:var(--amber);background:rgba(245,158,11,0.1);}
 .verdict.crash{color:var(--red);background:rgba(255,59,92,0.15);animation:badgepulse 0.5s infinite;}
 
-/* ─── Pi panel ─── */
+/* ─── Pi comparison panel ─── */
 #pi-hud{
   position:absolute;top:230px;right:18px;
   background:var(--glass);border:1px solid var(--border);border-radius:14px;
-  padding:12px 16px;backdrop-filter:blur(20px);min-width:190px;
+  padding:12px 16px;backdrop-filter:blur(20px);min-width:210px;
 }
 .pi-title{font-size:9px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:var(--muted);margin-bottom:10px;}
 .pi-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}
@@ -111,12 +111,20 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Ou
 .pi-val.ok{color:var(--green);}
 .pi-val.warn{color:var(--amber);}
 .pi-val.bad{color:var(--red);}
+.pi-compare-row{display:flex;gap:8px;margin:10px 0 6px;}
+.pi-compare-col{flex:1;background:rgba(255,255,255,0.03);border:1px solid var(--border);border-radius:8px;padding:7px 8px;}
+.pi-compare-head{font-size:8px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:5px;}
+.pi-compare-val{font-family:var(--mono);font-size:13px;font-weight:700;color:var(--white);}
+.pi-match{font-size:9px;font-weight:600;text-align:center;letter-spacing:1.5px;padding:4px;border-radius:5px;margin-top:6px;}
+.pi-match.agree{background:rgba(16,185,129,0.15);color:var(--green);}
+.pi-match.disagree{background:rgba(255,59,92,0.12);color:var(--red);}
+.pi-match.pending{background:rgba(255,255,255,0.04);color:var(--muted);}
 
 /* ─── Sensor strip (right edge) ─── */
 #sensor-strip{
-  position:absolute;right:18px;top:430px;
+  position:absolute;right:18px;top:480px;
   background:var(--glass);border:1px solid var(--border);border-radius:14px;
-  padding:10px 12px;backdrop-filter:blur(20px);width:190px;
+  padding:10px 12px;backdrop-filter:blur(20px);width:210px;
 }
 .sensor-title{font-size:9px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:var(--muted);margin-bottom:8px;}
 .spark-row{display:flex;gap:4px;margin-bottom:4px;}
@@ -124,8 +132,32 @@ html,body{width:100%;height:100%;overflow:hidden;background:#000;font-family:'Ou
 .spark-lbl{font-size:8px;font-family:var(--mono);color:var(--muted);margin-bottom:2px;}
 canvas.sp{width:100%;height:26px;display:block;border-radius:3px;}
 
-/* ─── Progress bar ─── */
-#progress-wrap{position:absolute;bottom:0;left:0;right:0;height:2px;background:rgba(255,255,255,0.05);}
+/* ─── Phase Timeline Panel ─── */
+#timeline-wrap{
+  position:absolute;bottom:70px;left:50%;transform:translateX(-50%);
+  width:min(820px,calc(100vw - 280px));
+  background:rgba(4,8,24,0.82);border:1px solid rgba(255,255,255,0.08);
+  border-radius:14px;padding:10px 14px 10px;
+  backdrop-filter:blur(20px);
+  pointer-events:none;
+  z-index:9;
+}
+.tl-header{display:flex;justify-content:space-between;margin-bottom:6px;align-items:center;}
+.tl-title{font-size:9px;font-weight:700;letter-spacing:2.5px;text-transform:uppercase;color:var(--muted);}
+.tl-time{font-family:var(--mono);font-size:10px;color:var(--muted);}
+#timeline-bar{position:relative;height:16px;border-radius:8px;overflow:hidden;background:rgba(255,255,255,0.05);}
+#tl-playhead{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 8px rgba(255,255,255,0.8);z-index:3;transition:left 0.05s;}
+#tl-deploy-marker{display:none;position:absolute;top:0;bottom:0;width:2px;background:var(--red);box-shadow:0 0 12px var(--red);z-index:4;}
+.tl-phase{position:absolute;top:0;bottom:0;display:flex;align-items:center;justify-content:center;overflow:hidden;}
+.tl-phase-label{font-size:8px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:rgba(255,255,255,0.7);white-space:nowrap;}
+.tl-legend{display:flex;gap:14px;margin-top:7px;}
+.tl-leg-item{display:flex;align-items:center;gap:5px;}
+.tl-leg-dot{width:8px;height:8px;border-radius:2px;}
+.tl-leg-label{font-size:9px;color:var(--muted);}
+#tl-latency{font-family:var(--mono);font-size:10px;color:var(--amber);margin-left:auto;display:none;}
+
+/* ─── Progress bar (thinner, above timeline) ─── */
+#progress-wrap{position:absolute;bottom:68px;left:0;right:0;height:2px;background:rgba(255,255,255,0.03);z-index:8;}
 #progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--violet),var(--cyan));transition:width 0.06s;}
 
 /* ─── AI Prompt Bar (bottom) ─── */
@@ -262,13 +294,23 @@ canvas.sp{width:100%;height:26px;display:block;border-radius:3px;}
     <div class="verdict normal" id="verdict-chip">NORMAL</div>
   </div>
 
-  <!-- Pi live -->
+  <!-- Pi live comparison -->
   <div id="pi-hud">
-    <div class="pi-title">Raspberry Pi Live</div>
-    <div class="pi-row"><span class="pi-key">P1 Label</span><span class="pi-val ok" id="pi-p1">—</span></div>
-    <div class="pi-row"><span class="pi-key">P2 Label</span><span class="pi-val" id="pi-p2">—</span></div>
-    <div class="pi-row"><span class="pi-key">Det Score</span><span class="pi-val" id="pi-det">—</span></div>
-    <div class="pi-row"><span class="pi-key">Latency</span><span class="pi-val" id="pi-lat">—</span></div>
+    <div class="pi-title">Pi vs Browser ML</div>
+    <div class="pi-compare-row">
+      <div class="pi-compare-col">
+        <div class="pi-compare-head">Browser</div>
+        <div class="pi-compare-val" id="cmp-browser">--</div>
+      </div>
+      <div class="pi-compare-col">
+        <div class="pi-compare-head">Pi</div>
+        <div class="pi-compare-val" id="cmp-pi">--</div>
+      </div>
+    </div>
+    <div class="pi-match pending" id="pi-match-lbl">Awaiting Pi</div>
+    <div class="pi-row" style="margin-top:8px"><span class="pi-key">Det Score</span><span class="pi-val" id="pi-det">--</span></div>
+    <div class="pi-row"><span class="pi-key">Gate</span><span class="pi-val" id="pi-gates">0/3</span></div>
+    <div class="pi-row"><span class="pi-key">Pi Latency</span><span class="pi-val" id="pi-lat">--</span></div>
   </div>
 
   <!-- Sensor sparklines -->
@@ -291,6 +333,25 @@ canvas.sp{width:100%;height:26px;display:block;border-radius:3px;}
 
   <!-- Progress bar -->
   <div id="progress-wrap"><div id="progress-fill"></div></div>
+
+  <!-- Phase Timeline Panel -->
+  <div id="timeline-wrap" style="display:none">
+    <div class="tl-header">
+      <span class="tl-title">Scenario Timeline</span>
+      <span class="tl-time" id="tl-time-label">0 ms</span>
+      <span id="tl-latency"></span>
+    </div>
+    <div id="timeline-bar">
+      <div id="tl-playhead" style="left:0%"></div>
+      <div id="tl-deploy-marker"></div>
+    </div>
+    <div class="tl-legend">
+      <div class="tl-leg-item"><div class="tl-leg-dot" style="background:#10b981"></div><span class="tl-leg-label">Normal</span></div>
+      <div class="tl-leg-item"><div class="tl-leg-dot" style="background:#f59e0b"></div><span class="tl-leg-label">Near-Crash</span></div>
+      <div class="tl-leg-item"><div class="tl-leg-dot" style="background:#f97316"></div><span class="tl-leg-label">Pre-Crash</span></div>
+      <div class="tl-leg-item"><div class="tl-leg-dot" style="background:#ff3b5c"></div><span class="tl-leg-label">Crash</span></div>
+    </div>
+  </div>
 
   <!-- Prompt bar -->
   <div id="prompt-bar">
@@ -1097,25 +1158,141 @@ function updateParticles(dt) {
 }
 
 // ─── BIKE UPDATE ──────────────────────────────────────────────────────────────
+// ─── BIKE UPDATE (Physics-Driven from Sensor Telemetry) ────────────────────────
+let cameraShake = new THREE.Vector3();
+let currentManifestData = null;
+let currentDurationMs = 36000;
+
 function updateBike(frame) {
   if (!bikeGroup||!roadCurve||crashActive||simDone) return;
   simP=Math.min((frame.progress||simP+0.0003),0.97);
   const pt=roadCurve.getPoint(simP);
   const pt2=roadCurve.getPoint(Math.min(simP+0.002,1));
   const fwd=new THREE.Vector3().subVectors(pt2,pt).normalize();
-  bikeGroup.position.copy(pt); bikeGroup.position.y+=0.44;
-  bikeGroup.rotation.y=Math.atan2(fwd.x,fwd.z);
-  const targetLean=THREE.MathUtils.clamp(-frame.ay*0.048,-0.72,0.72);
-  bikeGroup.rotation.z=THREE.MathUtils.lerp(bikeGroup.rotation.z,targetLean,0.10);
-  leanDeg=Math.abs(bikeGroup.rotation.z*57.3).toFixed(1);
-  const spin=(Math.abs(frame.gx)*0.014+0.5);
-  if(frontWheel) frontWheel.children[0].rotation.x+=spin;
-  if(rearWheel)  rearWheel.children[0].rotation.x+=spin;
-  speedKmh=Math.min(240,Math.max(0,Math.abs(frame.ax)*1.1+Math.abs(frame.gx)*0.22+28));
-  impactG=(Math.sqrt(frame.hg_ax**2+frame.hg_ay**2+frame.hg_az**2)/9.81).toFixed(1);
 
-  // Camera
+  // 1. Base position along curve + az bounce (suspension compression / bumps)
+  const azBounce = THREE.MathUtils.clamp((frame.az - 9.81) * 0.015, -0.15, 0.25);
+  bikeGroup.position.copy(pt);
+  bikeGroup.position.y += 0.44 + azBounce;
+
+  // 2. Heading / Yaw (gz yaw instability / road curve)
+  const baseHeading = Math.atan2(fwd.x, fwd.z);
+  const yawWiggle = THREE.MathUtils.clamp((frame.gz || 0) * 0.0008, -0.15, 0.15);
+  bikeGroup.rotation.y = baseHeading + yawWiggle;
+
+  // 3. Roll / Lean from lateral acceleration (ay) + roll rate (gx)
+  const targetLean = THREE.MathUtils.clamp(-frame.ay * 0.052 - (frame.gx || 0) * 0.0005, -0.78, 0.78);
+  bikeGroup.rotation.z = THREE.MathUtils.lerp(bikeGroup.rotation.z, targetLean, 0.12);
+  leanDeg = Math.abs(bikeGroup.rotation.z * 57.3).toFixed(1);
+
+  // 4. Pitch from longitudinal acceleration/braking (ax)
+  // Under hard braking (ax < 0), front dives; under acceleration (ax > 0), squat back
+  const targetPitch = THREE.MathUtils.clamp(-frame.ax * 0.018, -0.22, 0.18);
+  bikeGroup.rotation.x = THREE.MathUtils.lerp(bikeGroup.rotation.x, targetPitch, 0.15);
+
+  // 5. Wheel spin & metrics
+  const spin = (Math.abs(frame.gx) * 0.014 + 0.5);
+  if(frontWheel) frontWheel.children[0].rotation.x += spin;
+  if(rearWheel)  rearWheel.children[0].rotation.x += spin;
+  speedKmh = Math.min(240, Math.max(0, Math.abs(frame.ax) * 1.1 + Math.abs(frame.gx) * 0.22 + 28));
+  
+  const hgMag = Math.sqrt((frame.hg_ax||0)**2 + (frame.hg_ay||0)**2 + (frame.hg_az||0)**2);
+  impactG = (hgMag / 9.81).toFixed(1);
+
+  // High-G Camera Shake
+  if (hgMag > 150) {
+    const shakeAmp = Math.min(0.4, hgMag / 2000);
+    cameraShake.set(
+      (Math.random() - 0.5) * shakeAmp,
+      (Math.random() - 0.5) * shakeAmp,
+      (Math.random() - 0.5) * shakeAmp
+    );
+  } else {
+    cameraShake.lerp(new THREE.Vector3(0,0,0), 0.2);
+  }
+
+  // 6. Update Timeline Playhead
+  updateTimelineProgress(frame);
+
+  // Camera update
   if (!crashActive) updateCamera(pt, fwd);
+}
+
+function updateTimelineProgress(frame) {
+  const p = (frame.progress || 0) * 100;
+  const playhead = document.getElementById('tl-playhead');
+  if (playhead) playhead.style.left = p + '%';
+  const tLbl = document.getElementById('tl-time-label');
+  if (tLbl && frame.t_ms !== undefined) {
+    tLbl.textContent = Math.round(frame.t_ms) + ' ms' + (frame.phase ? ' • ' + frame.phase.toUpperCase() : '');
+  }
+}
+
+function buildTimelineBar(manifest, totalDurationMs) {
+  const bar = document.getElementById('timeline-bar');
+  const wrap = document.getElementById('timeline-wrap');
+  if (!bar || !wrap) return;
+  wrap.style.display = 'block';
+
+  // Clear existing phase segments (keep playhead and deploy marker)
+  const toRemove = bar.querySelectorAll('.tl-phase');
+  toRemove.forEach(el => el.remove());
+
+  const deployMarker = document.getElementById('tl-deploy-marker');
+  if (deployMarker) deployMarker.style.display = 'none';
+  const latEl = document.getElementById('tl-latency');
+  if (latEl) latEl.style.display = 'none';
+
+  currentManifestData = manifest;
+  currentDurationMs = totalDurationMs || 36000;
+
+  const phaseColors = {
+    'Normal': 'rgba(16, 185, 129, 0.45)',
+    'Near-Crash': 'rgba(245, 158, 11, 0.55)',
+    'Pre-Crash': 'rgba(249, 115, 22, 0.7)',
+    'Crash': 'rgba(255, 59, 92, 0.85)',
+  };
+
+  const segments = manifest?.segments || [];
+  if (segments.length > 0) {
+    let t = 0;
+    const totalMs = manifest?.timeline?.end_ms || currentDurationMs;
+    segments.forEach(seg => {
+      const dur = seg.duration_ms;
+      const leftPct = (t / totalMs) * 100;
+      const widthPct = (dur / totalMs) * 100;
+      
+      const ev = seg.event;
+      let phaseName = 'Normal';
+      if (['pothole', 'swerve', 'brake', 'gravel', 'near_crash'].includes(ev)) phaseName = 'Near-Crash';
+      else if (ev === 'pre_crash') phaseName = 'Pre-Crash';
+      else if (['crash', 'highside', 'lowside', 'front_collision', 'rear_collision'].includes(ev)) phaseName = 'Crash';
+
+      const phaseDiv = document.createElement('div');
+      phaseDiv.className = 'tl-phase';
+      phaseDiv.style.left = leftPct + '%';
+      phaseDiv.style.width = widthPct + '%';
+      phaseDiv.style.background = phaseColors[phaseName] || phaseColors['Normal'];
+      phaseDiv.style.borderRight = '1px solid rgba(255,255,255,0.15)';
+      
+      if (widthPct > 8) {
+        const lbl = document.createElement('span');
+        lbl.className = 'tl-phase-label';
+        lbl.textContent = ev.replace('_', ' ');
+        phaseDiv.appendChild(lbl);
+      }
+      bar.appendChild(phaseDiv);
+      t += dur;
+    });
+  } else {
+    // Default single bar if no manifest
+    const phaseDiv = document.createElement('div');
+    phaseDiv.className = 'tl-phase';
+    phaseDiv.style.left = '0%';
+    phaseDiv.style.width = '100%';
+    phaseDiv.style.background = phaseColors['Normal'];
+    bar.appendChild(phaseDiv);
+  }
 }
 
 let camVel = new THREE.Vector3();
@@ -1144,7 +1321,8 @@ function updateCamera(bikeWorldPos, fwd) {
     targetPos.copy(bikeWorldPos).add(new THREE.Vector3(Math.sin(time)*12,8,Math.cos(time)*12));
     targetLook.copy(bikeWorldPos).add(new THREE.Vector3(0,1,0));
   }
-  // Faster, more responsive camera — no more lagging into buildings
+  // Apply camera shake & smooth lerp
+  targetPos.add(cameraShake);
   camera.position.lerp(targetPos, 0.12);
   camera.lookAt(targetLook);
 }
@@ -1158,7 +1336,6 @@ function updateHUD(label) {
   document.getElementById('g-impact').textContent=impactG+'g';
   drawLeanArc(parseFloat(leanDeg)*(bikeGroup?.rotation?.z<0?-1:1));
   if(!deployed){
-    // Subtle bloom only — no aggressive flash
     bloomPass.strength=label===2?1.2:label===1?0.55:0.38;
   }
 }
@@ -1187,7 +1364,8 @@ function drawLeanArc(lean) {
 
 function updateGates(n){
   for(let i=0;i<3;i++){const el=document.getElementById('gate'+i);if(el)el.className='gate'+(i<n?' hit':'');}
-  document.getElementById('pi-gates')&&(document.getElementById('pi-gates').textContent=n+' / 3');
+  const pg = document.getElementById('pi-gates');
+  if (pg) pg.textContent = n + ' / 3';
 }
 
 // ─── SPARKLINES ───────────────────────────────────────────────────────────────
@@ -1215,14 +1393,37 @@ function updateSparklines(f){
   drawSp('hg',f.hg_az,'#ff3b5c',-2500,2500);
 }
 
-// ─── BROWSER ML ───────────────────────────────────────────────────────────────
+// ─── BROWSER ML & COMPARISON ──────────────────────────────────────────────────
 let mlBuf=[];
+let lastBrowserVerdict = 'NORMAL';
+let lastPiVerdict = 'NORMAL';
+
+function compareML() {
+  const matchLbl = document.getElementById('pi-match-lbl');
+  if (!matchLbl) return;
+  if (lastBrowserVerdict === lastPiVerdict) {
+    matchLbl.textContent = 'MATCH (' + lastBrowserVerdict + ')';
+    matchLbl.className = 'pi-match agree';
+  } else {
+    matchLbl.textContent = 'DIVERGENCE';
+    matchLbl.className = 'pi-match disagree';
+  }
+}
+
 function runBrowserML(f){
   mlBuf.push(f);if(mlBuf.length>30)mlBuf.shift();
-  const mxG=Math.max(...mlBuf.map(x=>Math.abs(x.hg_az)));
+  const mxG=Math.max(...mlBuf.map(x=>Math.abs(x.hg_az||0)));
   const score=Math.min(1,mxG/500);
   let p2=0; if(mxG>300)p2=2; else if(mxG>60)p2=1;
   const L=['NORMAL','NEAR-CRASH','CRASH'];
+  lastBrowserVerdict = L[p2];
+
+  const cmpB = document.getElementById('cmp-browser');
+  if (cmpB) {
+    cmpB.textContent = lastBrowserVerdict;
+    cmpB.style.color = p2 === 2 ? 'var(--red)' : p2 === 1 ? 'var(--amber)' : 'var(--green)';
+  }
+
   const pct1=Math.round(score*60),pct2=Math.round(score*100);
   document.getElementById('p1-pct').textContent=pct1+'%';
   document.getElementById('p1-bar').style.width=pct1+'%';
@@ -1231,6 +1432,8 @@ function runBrowserML(f){
   const vc=document.getElementById('verdict-chip');
   vc.className='verdict '+(p2===2?'crash':p2===1?'near':'normal');
   vc.textContent=L[p2];
+
+  compareML();
 }
 
 // ─── WEBSOCKET ────────────────────────────────────────────────────────────────
@@ -1240,15 +1443,14 @@ function connectWS(){
   ws.onclose=()=>{setDot('ws-dot','ws-label','Offline',false);setTimeout(connectWS,3000);};
   ws.onmessage=(ev)=>{
     const msg=JSON.parse(ev.data);
-    if(msg.type==='server_hello' && msg.pi_connected) setDot('pi-dot','pi-label','Pi',true);
-    if(msg.type==='pi_status') setDot('pi-dot','pi-label',msg.connected?'Pi':'Pi',msg.connected);
+    if(msg.type==='server_hello' && msg.pi_connected) setDot('pi-dot','pi-label','Pi Active',true);
+    if(msg.type==='pi_status') setDot('pi-dot','pi-label',msg.connected?'Pi Active':'Pi Offline',msg.connected);
     if(msg.type==='playback_start'){
       const bk=msg.biome||'hill_station';
       buildWorld(bk);
-      setDot('pi-dot','pi-label','Pi',false);
+      buildTimelineBar(msg.manifest, msg.duration_ms);
+      setDot('pi-dot','pi-label','Pi Active',true);
       hideLoading();
-      // Signal server: 3D world is built, safe to start streaming frames now
-      // Small timeout ensures Three.js has done first render pass
       setTimeout(() => {
         if(ws && ws.readyState===WebSocket.OPEN){
           ws.send(JSON.stringify({type:'browser_ready'}));
@@ -1262,17 +1464,42 @@ function connectWS(){
     }
     if(msg.type==='pi_verdict'){
       const L=['NORMAL','NEAR-CRASH','CRASH'];
-      const p1=msg.p1_label??0,p2=msg.p2_label??0;
-      document.getElementById('pi-p1').textContent=L[p1];
-      document.getElementById('pi-p1').className='pi-val '+(p1===2?'bad':p1===1?'warn':'ok');
-      document.getElementById('pi-p2').textContent=L[p2];
+      const p1=msg.p1_label??0, p2=msg.p2_label??0;
+      lastPiVerdict = L[p2];
+
+      const cmpPi = document.getElementById('cmp-pi');
+      if (cmpPi) {
+        cmpPi.textContent = lastPiVerdict;
+        cmpPi.style.color = p2 === 2 ? 'var(--red)' : p2 === 1 ? 'var(--amber)' : 'var(--green)';
+      }
+
       document.getElementById('pi-det').textContent=(msg.det_score||0).toFixed(3);
       document.getElementById('pi-lat').textContent=(msg.latency_ms||0).toFixed(1)+'ms';
       updateGates(msg.gate_count||0);
-      const vc2=document.getElementById('verdict-chip');
-      vc2.className='verdict '+(p2===2?'crash':p2===1?'near':'normal');
-      vc2.textContent=L[p2];
-      if(msg.deployed&&!deployed){deployed=true;triggerCrash();showBB(msg);}
+
+      compareML();
+
+      if(msg.deployed&&!deployed){
+        deployed=true;
+        triggerCrash();
+        showBB(msg);
+
+        // Show Deploy marker on Timeline
+        const marker = document.getElementById('tl-deploy-marker');
+        if (marker) {
+          marker.style.display = 'block';
+          marker.style.left = (simP * 100) + '%';
+        }
+
+        // Show detection latency against known crash time if available
+        const knownCrashMs = currentManifestData?.timeline?.crash_ms;
+        const latEl = document.getElementById('tl-latency');
+        if (latEl && msg.deploy_ts !== undefined && knownCrashMs !== undefined) {
+          latEl.style.display = 'inline';
+          const diff = (msg.deploy_ts - knownCrashMs).toFixed(0);
+          latEl.textContent = `Deploy @ ${Math.round(msg.deploy_ts)}ms (${diff > 0 ? '+' : ''}${diff}ms vs crash onset)`;
+        }
+      }
     }
     if(msg.type==='playback_done'){
       hideLoading();
@@ -1281,8 +1508,7 @@ function connectWS(){
       document.getElementById('badge').textContent='SIMULATION COMPLETE';
       document.getElementById('badge').className='';
       document.getElementById('badge').style.color='var(--green)';
-      document.getElementById('badge').style.borderColor='rgba(16,185,129,0.4)';
-      // Re-enable prompt bar for next scenario
+      document.getElementById('badge').style.borderColor='rgba(16, 185, 129, 0.4)';
       document.getElementById('launch-btn').disabled=false;
     }
     if(msg.type==='error'){hideLoading();alert(msg.msg);}
@@ -1326,7 +1552,7 @@ window.launchScenario = async () => {
 
   const biome=promptToBiome(prompt);
   buildWorld(biome);
-  showLoading('Running Layer 1 AI...','Gemini is generating your sensor telemetry');
+  showLoading('Running Layer 1 AI...','Generating multi-phase telemetry (Normal \u2192 Pre-Crash \u2192 Crash)');
 
   try{
     const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt,biome,mode:'llm'})});

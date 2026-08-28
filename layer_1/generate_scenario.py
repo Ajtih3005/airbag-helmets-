@@ -33,7 +33,7 @@ ROOT_DIR   = os.path.dirname(LAYER1_DIR)
 sys.path.insert(0, LAYER1_DIR)
 
 from data_generator  import (generate_from_segments, generate_procedural,
-                              SAMPLE_RATE_HZ, LABEL_MAP)
+                              SAMPLE_RATE_HZ, LABEL_MAP, PHASE_LABELS)
 from llm_generator   import generate_segments_from_prompt
 
 # Target: 3 minutes of simulation
@@ -80,6 +80,52 @@ def save_output(df: pd.DataFrame, output_path: str) -> None:
     df.to_csv(output_path, index=False)
     print(f"\n  Sensor data saved → {output_path}")
     print(f"  File size         : {os.path.getsize(output_path) / 1024:.1f} KB")
+
+
+def save_manifest(segments: list, df: pd.DataFrame, output_path: str) -> None:
+    """
+    Save a scenario_manifest.json alongside the CSV.
+    Records exact ms timestamps of each phase transition so the UI can
+    draw the timeline and score ML detection latency against ground truth.
+    The ML never sees this during runtime — it must detect phases from sensor data alone.
+    """
+    crash_events   = {"crash", "highside", "lowside", "front_collision", "rear_collision"}
+    nc_events      = {"pothole", "swerve", "brake", "gravel", "near_crash"}
+
+    timeline = {}
+    t = 0
+    for seg in segments:
+        ev  = seg["event"]
+        dur = seg["duration_ms"]
+        ph  = PHASE_LABELS.get(ev, "Normal")
+        if ph == "Normal" and "normal_start_ms" not in timeline:
+            timeline["normal_start_ms"] = t
+        elif ph == "Near-Crash" and "near_crash_ms" not in timeline:
+            timeline["near_crash_ms"] = t
+        elif ph == "Pre-Crash" and "pre_crash_ms" not in timeline:
+            timeline["pre_crash_ms"] = t
+        elif ph == "Crash" and "crash_ms" not in timeline:
+            timeline["crash_ms"] = t
+        t += dur
+
+    timeline["end_ms"] = t
+
+    manifest = {
+        "segments": segments,
+        "timeline": timeline,
+        "crash_known_at_ms": timeline.get("crash_ms"),
+        "pre_crash_known_at_ms": timeline.get("pre_crash_ms"),
+        "total_samples": len(df),
+        "sample_rate_hz": SAMPLE_RATE_HZ,
+    }
+
+    manifest_path = os.path.join(
+        os.path.dirname(os.path.abspath(output_path)), "scenario_manifest.json"
+    )
+    with open(manifest_path, "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+    print(f"  Manifest saved    → {manifest_path}")
+    return manifest_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +242,9 @@ def main():
 
     # ── Save CSV ──────────────────────────────────────────────────────────────
     save_output(df, args.output)
+
+    # ── Save Manifest ─────────────────────────────────────────────────────────
+    save_manifest(segments, df, args.output)
 
     # ── Save segments JSON (optional) ─────────────────────────────────────────
     if args.save_segments:

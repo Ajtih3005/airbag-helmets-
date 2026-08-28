@@ -4,6 +4,7 @@ layer_2/server.py  -  Unified HTTP + WebSocket + Layer-1 API server
 One server on port 5500 handles everything:
 
   GET  /              -> serves cockpit.html  (Unified AI Cockpit)
+  GET  /api/manifest  -> serves latest scenario_manifest.json
   POST /api/generate  -> runs Layer 1 Python, returns CSV path + metadata
   WS   /ws            -> real-time sensor frame streaming to browser & Pi
 
@@ -23,9 +24,10 @@ from pathlib import Path
 from aiohttp import web
 import aiohttp
 
-ROOT      = Path(__file__).parent.parent
-LAYER2    = Path(__file__).parent
-CSV_PATH  = ROOT / "data" / "pre_decided_sensor_data.csv"
+ROOT           = Path(__file__).parent.parent
+LAYER2         = Path(__file__).parent
+CSV_PATH       = ROOT / "data" / "pre_decided_sensor_data.csv"
+MANIFEST_PATH  = ROOT / "data" / "scenario_manifest.json"
 
 # Playback at 20fps. FRAME_STEP=10 means each frame covers 10ms of 1kHz data.
 # This gives a 5x richer visual — the bike moves smoothly and events are clearly visible.
@@ -38,8 +40,10 @@ browser_clients: set  = set()
 browser_ready: bool   = False   # True once browser signals 3D world is built
 pi_client             = None
 playback_task         = None
+pi_subprocess_task    = None    # asyncio task running layer_4/pi_main.py subprocess
 current_df            = None
 current_meta: dict    = {}
+current_manifest: dict = {}     # loaded from scenario_manifest.json
 
 
 # ---- HTTP: serve static files -----------------------------------------------
@@ -58,6 +62,12 @@ async def handle_static(request):
     if path.exists():
         return web.FileResponse(path)
     return web.Response(status=404, text="Not found")
+
+async def handle_manifest(request):
+    """Serve the latest scenario_manifest.json."""
+    if MANIFEST_PATH.exists():
+        return web.FileResponse(MANIFEST_PATH)
+    return web.json_response({"error": "No manifest found"}, status=404)
 
 
 # ─── HTTP: Layer 1 generate API ───────────────────────────────────────────────
@@ -148,10 +158,20 @@ async def broadcast(msg: str):
 # ─── CSV playback ──────────────────────────────────────────────────────────────
 
 async def playback_csv():
-    global current_df, pi_client, browser_ready
+    global current_df, pi_client, browser_ready, current_manifest
 
     if current_df is None:
         return
+
+    # Build phase lookup from 'phase' column in DataFrame (written by generate_scenario.py)
+    # Falls back to label_name if phase column absent (older CSV files)
+    has_phase_col = "phase" in current_df.columns
+
+    def get_phase_for_row(row):
+        if has_phase_col:
+            return str(row.get("phase", "Normal"))
+        lbl = int(row.get("label", 0))
+        return ["Normal", "Near-Crash", "Crash"][lbl] if lbl < 3 else "Normal"
 
     # Wait up to 5 seconds for the browser to finish building the 3D world
     # before we start streaming frames (prevents the rushing/buffering problem)
@@ -178,11 +198,13 @@ async def playback_csv():
     for i in range(0, rows, FRAME_STEP):
         row  = current_df.iloc[i]
         t_ms = float(row["timestamp_ms"]) if has_ts else float(i)
+        phase = get_phase_for_row(row)
 
         frame = {
             "type"    : "sensor_frame",
             "t_ms"    : t_ms,
             "label"   : int(row.get("label", 0)),
+            "phase"   : phase,
             "ax"      : float(row["ax"]),
             "ay"      : float(row["ay"]),
             "az"      : float(row["az"]),
@@ -212,7 +234,7 @@ async def playback_csv():
 # ─── WebSocket handler ─────────────────────────────────────────────────────────
 
 async def handle_ws(request):
-    global current_df, playback_task, pi_client, current_meta
+    global current_df, playback_task, pi_client, current_meta, current_manifest, pi_subprocess_task
 
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
@@ -260,17 +282,37 @@ async def handle_ws(request):
                         "csv_path": csv_path,
                     }
 
+                    # Load scenario manifest if available
+                    current_manifest = {}
+                    manifest_file = str(MANIFEST_PATH)
+                    if os.path.exists(manifest_file):
+                        try:
+                            with open(manifest_file, "r", encoding="utf-8") as mf:
+                                current_manifest = json.load(mf)
+                            print(f"[SERVER] Manifest loaded: {len(current_manifest.get('segments',[]))} segments")
+                        except Exception as e:
+                            print(f"[SERVER] Manifest load error: {e}")
+
                     dur = float(current_df["timestamp_ms"].max()) if "timestamp_ms" in current_df.columns else len(current_df)
                     await broadcast(json.dumps({
                         "type"       : "playback_start",
                         "rows"       : len(current_df),
                         "duration_ms": dur,
+                        "manifest"   : current_manifest,
                         **current_meta,
                     }))
 
                     if playback_task and not playback_task.done():
                         playback_task.cancel()
                     playback_task = asyncio.create_task(playback_csv())
+
+                    # Launch Pi subprocess (layer_4/pi_main.py) to run real ML
+                    # Its verdicts are printed to stdout and relayed via broadcast
+                    if pi_subprocess_task and not pi_subprocess_task.done():
+                        pi_subprocess_task.cancel()
+                    pi_subprocess_task = asyncio.create_task(
+                        run_pi_subprocess(csv_path)
+                    )
 
                 elif mtype == "pi_verdict":
                     await broadcast(msg.data)   # relay Pi results to browsers
@@ -298,12 +340,47 @@ async def handle_ws(request):
 
 # ─── App setup ────────────────────────────────────────────────────────────────
 
+async def run_pi_subprocess(csv_path: str):
+    """
+    Runs layer_4/pi_main.py as an async subprocess.
+    Monitors its stdout for JSON verdict lines and broadcasts them
+    as pi_verdict WebSocket messages to all browser clients.
+    """
+    cmd = [
+        sys.executable,
+        str(ROOT / "layer_4" / "pi_main.py"),
+        "--input", csv_path,
+    ]
+    print(f"[PI SUBPROCESS] Starting: {' '.join(cmd)}")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            cwd=str(ROOT),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        )
+        await proc.wait()
+        stdout, stderr = await proc.communicate()
+        print(f"[PI SUBPROCESS] Exited (code {proc.returncode})")
+        # Broadcast completion
+        await broadcast(json.dumps({"type": "pi_done", "exit_code": proc.returncode}))
+    except asyncio.CancelledError:
+        if proc:
+            proc.terminate()
+        raise
+    except Exception as e:
+        print(f"[PI SUBPROCESS] Error: {e}")
+        await broadcast(json.dumps({"type": "pi_error", "msg": str(e)}))
+
+
 def build_app():
     app = web.Application()
     app.router.add_get("/",              handle_index)
     app.router.add_get("/index.html",    handle_index)
     app.router.add_get("/dashboard",     handle_dashboard)
     app.router.add_get("/dashboard.html",handle_dashboard)
+    app.router.add_get("/api/manifest",  handle_manifest)
     app.router.add_get("/{name}",        handle_static)
     app.router.add_post("/api/generate", handle_generate)
     app.router.add_get("/ws",            handle_ws)
