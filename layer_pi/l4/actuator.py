@@ -144,7 +144,8 @@ class ActuatorEngine:
         if self.deployed:
             return
 
-        if getattr(self, "_last_pulse", 0) and (now - self._last_pulse < 1.5):
+        now = time.time()
+        if now - self._last_pulse < 1.5:
             return
         self._last_pulse = now
 
