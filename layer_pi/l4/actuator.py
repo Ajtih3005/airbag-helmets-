@@ -49,6 +49,10 @@ class ActuatorEngine:
         self.deploy_time      = None
         self.deploy_reason    = None
 
+        if self.emergency_number == "+91XXXXXXXXXX":
+            print("[ACTUATOR WARN] Emergency number is still the default placeholder (+91XXXXXXXXXX). "
+                  "Pass --phone <number> or set EMERGENCY_NUMBER before deployment.")
+
         if self.hardware:
             self._init_gpio()
 
@@ -110,7 +114,7 @@ class ActuatorEngine:
             return
 
         now = time.time()
-        if hasattr(self, "_last_pulse") and (now - self._last_pulse < 1.5):
+        if hasattr(self, "_last_pulse") and (now - self._last_pulse < 0.6):
             return
         self._last_pulse = now
 

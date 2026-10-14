@@ -1,7 +1,7 @@
 {
   "deployed": true,
-  "timestamp": "20260828_221433",
+  "timestamp": "20260911_111002",
   "reason": "3-Path ML Confirmed Crash",
   "severity": "SEVERE (Life-threatening impact)",
-  "peak_g": 201.38
+  "peak_g": 221.92
 }

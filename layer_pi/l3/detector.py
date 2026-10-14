@@ -19,20 +19,17 @@ import joblib
 import numpy as np
 import pandas as pd
 
-# Path setup - l3/ is the package dir, parent is layer_pi/
-import os, sys
-L3_DIR   = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(L3_DIR)           # layer_pi/
-MODEL_DIR = os.path.join(ROOT_DIR, "models")
+# Path setup
+LAYER3_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR   = os.path.dirname(LAYER3_DIR)
+MODEL_DIR  = os.path.join(ROOT_DIR, "models")
 
 try:
-    # Relative imports work when imported as a package (from l3.detector import ...)
     from .feature_engineering import extract_features_window, WINDOW_SIZE, STRIDE
     from .sentinel import Path1Sentinel
     from .arbiter import DualLayerArbiter, FastPhysicsTrigger
 except ImportError:
-    # Fallback: add l3/ to path for direct execution
-    sys.path.insert(0, L3_DIR)
+    sys.path.insert(0, LAYER3_DIR)
     from feature_engineering import extract_features_window, WINDOW_SIZE, STRIDE
     from sentinel import Path1Sentinel
     from arbiter import DualLayerArbiter, FastPhysicsTrigger
@@ -44,6 +41,7 @@ SAMPLE_RATE_HZ          = 1000
 BLACKBOX_MAX            = SAMPLE_RATE_HZ * BLACKBOX_SECONDS
 BLACKBOX_MIN_RATIO      = 0.05
 LABEL_NAME              = {0: "Normal", 1: "Near-Crash", 2: "CRASH"}
+WIN_STRIDE              = 200  # Evaluate window model every 200 samples (200ms)
 
 
 class Layer3Detector:
@@ -82,10 +80,11 @@ class Layer3Detector:
         self.physics_trigger = FastPhysicsTrigger()
 
     def load_models(self):
-        # Look for models in parent dir (layer_pi/models)
         candidate_dirs = [
+            os.path.join(LAYER3_DIR, "models"),
             os.path.join(ROOT_DIR, "models"),
-            os.path.join(L3_DIR, "models"),
+            os.path.join(ROOT_DIR, "plan_a", "models"),
+            os.path.join(ROOT_DIR, "layer_pi", "models"),
             self.model_dir
         ]
         target_dir = None
@@ -93,6 +92,7 @@ class Layer3Detector:
             if os.path.isdir(d) and os.path.exists(os.path.join(d, "best_model.pkl")):
                 target_dir = d
                 break
+
         if not target_dir:
             target_dir = candidate_dirs[0]
 
@@ -140,10 +140,7 @@ class Layer3Detector:
         det_score = p1_res["det_score"]
         trend = p1_res["trend"]
 
-        # Window stride — how many samples between Path 2 evaluations (200ms)
-        WIN_STRIDE = 200
-
-        # Sentinel Gate Acceleration / Recovery Rule (Plan A specification)
+        # Sentinel Gate Acceleration / Recovery Rule
         # Only boost gate when Sentinel actually predicts crash/near-crash AND trend is rising
         if p1_label in (1, 2) and (trend >= 0.20 or det_score >= 0.35):
             if self.consecutive_crash == 0:
@@ -157,6 +154,7 @@ class Layer3Detector:
         p2_label = p2_crash = p2_near = None
         p2_evaluated = False
 
+        # Evaluate window model every WIN_STRIDE samples (200ms) — reduces Pi CPU load significantly
         if self.window_model and len(self.window_buffer) >= WINDOW_SIZE and self.samples_since_pred >= WIN_STRIDE:
             self.samples_since_pred = 0
             self.total_windows += 1
@@ -188,9 +186,6 @@ class Layer3Detector:
                 if not (p1_label == 2 and p1_crash >= CRASH_PROB_THRESHOLD):
                     self.consecutive_crash = 0
 
-        # --- Fast Physics Check ---
-        phys_result = self.physics_trigger.evaluate_sample(sample, t_now)
-
         # Store in Black Box RAM
         bb_entry = {
             **sample,
@@ -202,12 +197,26 @@ class Layer3Detector:
         }
         self.blackbox.append(bb_entry)
 
-        # --- PATH 3: Black Box Validation on Gate 3/3 --------------------------
-        bb_ratio = 0.0
+        # --- Fast Physics Check + Arbiter ---
+        phys_result = self.physics_trigger.evaluate_sample(sample, t_now)
+        # Wire physics result into arbiter so the 25g extreme override is not bypassed
+        arbiter_deploy, arbiter_reason = self.arbiter.evaluate(
+            phys_result,
+            ml_result={"crash_prob": p1_crash, "label": p1_label},
+            current_sample=sample,
+        )
         new_deploy = False
         reason = ""
 
-        if self.consecutive_crash >= CONSECUTIVE_WINDOWS_REQ and not self.deploy_fired:
+        if arbiter_deploy and not self.deploy_fired:
+            self.deploy_fired = True
+            new_deploy = True
+            reason = arbiter_reason
+
+        # --- PATH 3: Black Box Validation on Gate 3/3 --------------------------
+        bb_ratio = 0.0
+
+        if not self.deploy_fired and self.consecutive_crash >= CONSECUTIVE_WINDOWS_REQ:
             bb_preds = [e for e in self.blackbox if e.get("p1_label") is not None or e.get("p2_label") is not None]
             crash_nc = sum(1 for e in bb_preds if e.get("p1_label") in (1,2) or e.get("p2_label") in (1,2))
             bb_ratio = crash_nc / max(len(bb_preds), 1)

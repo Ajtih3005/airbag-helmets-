@@ -76,7 +76,9 @@ def print_summary(df: pd.DataFrame, segments: list[dict]) -> None:
 
 def save_output(df: pd.DataFrame, output_path: str) -> None:
     """Save the sensor DataFrame to a CSV file."""
-    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    parent = os.path.dirname(os.path.abspath(output_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     df.to_csv(output_path, index=False)
     print(f"\n  Sensor data saved → {output_path}")
     print(f"  File size         : {os.path.getsize(output_path) / 1024:.1f} KB")

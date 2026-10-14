@@ -41,6 +41,9 @@ VALID_EVENTS = {
     "crash", "highside", "lowside", "front_collision", "rear_collision",
 }
 
+# Crash event names — used by _validate_segments to enforce pre_crash injection
+_CRASH_EVENTS = {"crash", "highside", "lowside", "front_collision", "rear_collision"}
+
 # Keyword → event name for the fallback parser
 _KEYWORD_MAP = {
     "highway":       "highway",
@@ -114,7 +117,7 @@ def _call_gemini(prompt: str, api_key: str) -> list[dict]:
     """Call the Gemini API and parse the returned JSON segment list."""
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-3.6-flash",
+        model_name="gemini-2.0-flash",
         system_instruction=_SYSTEM_PROMPT,
     )
     response = model.generate_content(prompt)

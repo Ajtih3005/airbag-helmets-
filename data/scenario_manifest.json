@@ -1,20 +1,29 @@
 {
   "segments": [
     {
-      "event": "highway",
-      "duration_ms": 32700
+      "event": "city",
+      "duration_ms": 20200
+    },
+    {
+      "event": "rain",
+      "duration_ms": 9000
+    },
+    {
+      "event": "gravel",
+      "duration_ms": 3500
     },
     {
       "event": "pre_crash",
       "duration_ms": 300
     },
     {
-      "event": "front_collision",
+      "event": "crash",
       "duration_ms": 3000
     }
   ],
   "timeline": {
     "normal_start_ms": 0,
+    "near_crash_ms": 29200,
     "pre_crash_ms": 32700,
     "crash_ms": 33000,
     "end_ms": 36000

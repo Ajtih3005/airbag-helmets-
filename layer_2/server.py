@@ -89,10 +89,9 @@ async def handle_generate(request):
             cmd = [sys.executable, str(ROOT / "layer_1" / "generate_scenario.py"),
                    "--prompt", prompt]
         elif mode == "proc" and events:
-            # Build --events arg from event list
-            events_arg = ",".join(f"{e['event']}:{e['duration_ms']}" for e in events)
+            # --events is not supported by generate_scenario.py; use --procedural instead
             cmd = [sys.executable, str(ROOT / "layer_1" / "generate_scenario.py"),
-                   "--events", events_arg]
+                   "--procedural"]
         else:
             # Fallback: use existing CSV
             return web.json_response({
@@ -352,6 +351,7 @@ async def run_pi_subprocess(csv_path: str):
         "--input", csv_path,
     ]
     print(f"[PI SUBPROCESS] Starting: {' '.join(cmd)}")
+    proc = None   # initialise before try so except block is always safe
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -360,7 +360,7 @@ async def run_pi_subprocess(csv_path: str):
             stderr=asyncio.subprocess.PIPE,
             env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         )
-        await proc.wait()
+        # communicate() awaits termination AND reads stdout/stderr — do NOT call wait() first
         stdout, stderr = await proc.communicate()
         print(f"[PI SUBPROCESS] Exited (code {proc.returncode})")
         # Broadcast completion

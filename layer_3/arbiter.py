@@ -88,10 +88,12 @@ class DualLayerArbiter:
         variance = sum((x - mean_val) ** 2 for x in vals) / len(vals)
         std_val = math.sqrt(variance)
 
+        # Suppress if the current reading is NOT a significant outlier above the baseline.
+        # A real crash spike must exceed mean + 3σ; if it does not, it is likely a false positive.
         if std_val > 4.0:
             outlier_thresh = mean_val + 3.0 * std_val
             if current_mag < outlier_thresh:
-                return True
+                return True   # reading is below the crash-level threshold → false positive
         return False
 
     def evaluate(self, physics_result, ml_result=None, current_sample=None):

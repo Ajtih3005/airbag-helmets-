@@ -24,6 +24,12 @@ import math
 import warnings
 warnings.filterwarnings("ignore")
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 
@@ -186,7 +192,6 @@ async def run_ws_client(server_url: str, hardware: bool, phone: str):
 def run_standalone(csv_path: str, hardware: bool, phone: str):
     import pandas as pd
     import math
-    from detector import Layer3Detector
 
     print("=" * 65)
     print("  🚀 RASPBERRY PI STANDALONE MODE (Offline ML Execution)")

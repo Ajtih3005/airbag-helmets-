@@ -14,23 +14,15 @@ Then copy the whole folder to the Pi:
 import os
 import shutil
 
-ROOT     = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEST     = os.path.dirname(os.path.abspath(__file__))
+ROOT   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PI_DIR = os.path.dirname(os.path.abspath(__file__))  # layer_pi/ directory
 
-FILES_TO_COPY = [
-    # Layer 3 — ML Detection Engine
-    ("layer_3/feature_engineering.py", "feature_engineering.py"),
-    ("layer_3/sentinel.py",            "sentinel.py"),
-    ("layer_3/arbiter.py",             "arbiter.py"),
-    ("layer_3/detector.py",            "detector.py"),
-    ("layer_3/compiled_models.js",     "compiled_models.js"),   # kept for reference
-
-    # Layer 4 — Hardware Actuation
-    ("layer_4/actuator.py",            "actuator.py"),
-
-    # Layer 5 — Post-Crash Analysis
-    ("layer_5/post_crash_analysis.py", "post_crash_analysis.py"),
-]
+# Files bundled into the Pi package:
+#   layer_3/*.py  -> layer_pi/l3/
+#   layer_4/actuator.py -> layer_pi/l4/
+#   layer_5/post_crash_analysis.py -> layer_pi/l5/
+#   models/*.pkl -> layer_pi/models/
+# Note: compiled_models.js is a browser-only artefact and is NOT copied to the Pi.
 
 def bundle():
     print("=" * 55)
@@ -84,7 +76,7 @@ def bundle():
         ok += 1
 
     print(f"\n  {ok} items bundled into layer_pi/")
-    print(f"  Destination: {DEST}")
+    print(f"  Destination: {PI_DIR}")
     print("\n  Next steps for Raspberry Pi:")
     print("  1. Copy layer_pi folder to SD card or SCP to Pi:")
     print("     scp -r layer_pi/ pi@<PI_IP>:~/smart_helmet/")

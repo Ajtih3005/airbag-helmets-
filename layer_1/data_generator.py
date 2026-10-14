@@ -404,6 +404,13 @@ def generate_procedural(total_duration_ms=5000, rng=None):
         dur = min(dur, remaining_ms - 200)
         if dur <= 0:
             break
+
+        # Inject pre_crash before every crash event (mirrors LLM path logic)
+        if event in crash_events:
+            pre_dur = 300
+            remaining_ms -= pre_dur
+            segments.append({"event": "pre_crash", "duration_ms": pre_dur})
+
         segments.append({"event": event, "duration_ms": dur})
         remaining_ms -= dur
 
