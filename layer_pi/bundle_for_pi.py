@@ -33,7 +33,18 @@ def bundle():
     os.makedirs(os.path.join(PI_DIR, "l4"), exist_ok=True)
     os.makedirs(os.path.join(PI_DIR, "l5"), exist_ok=True)
     os.makedirs(os.path.join(PI_DIR, "models"), exist_ok=True)
-    os.makedirs(os.path.join(PI_DIR, "logs"), exist_ok=True)
+    logs_dir = os.path.join(PI_DIR, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    # Clean stale lock files and large old logs so transfer is fast
+    lock_file = os.path.join(PI_DIR, "AIRBAG_DEPLOYED.lock")
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
+    for old_f in os.listdir(logs_dir):
+        if old_f.endswith(".csv"):
+            try:
+                os.remove(os.path.join(logs_dir, old_f))
+            except Exception:
+                pass
 
     ok = 0
 
@@ -74,6 +85,17 @@ def bundle():
                 shutil.copy2(s_file, d_file)
                 print(f"  [COPIED]  models/{m} -> layer_pi/models/{m}")
         ok += 1
+
+    # Telemetry Data -> layer_pi/data/ (self-contained standalone execution)
+    data_dst = os.path.join(PI_DIR, "data")
+    os.makedirs(data_dst, exist_ok=True)
+    for d_file in ["pre_decided_sensor_data.csv", "scenario_manifest.json"]:
+        s_path = os.path.join(ROOT, "data", d_file)
+        t_path = os.path.join(data_dst, d_file)
+        if os.path.exists(s_path):
+            shutil.copy2(s_path, t_path)
+            print(f"  [COPIED]  data/{d_file} -> layer_pi/data/{d_file}")
+            ok += 1
 
     print(f"\n  {ok} items bundled into layer_pi/")
     print(f"  Destination: {PI_DIR}")

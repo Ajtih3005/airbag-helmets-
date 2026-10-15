@@ -36,9 +36,9 @@ from data_generator  import (generate_from_segments, generate_procedural,
                               SAMPLE_RATE_HZ, LABEL_MAP, PHASE_LABELS)
 from llm_generator   import generate_segments_from_prompt
 
-# Target: 3 minutes of simulation
-# Formula: 3min * 60s * PLAYBACK_FPS(20) * FRAME_STEP(10) = 36,000 rows
-TARGET_DURATION_MS = 36_000   # 36 seconds of 1kHz data = 3 min visual at 20fps/step10
+# Target: Snappy, engaging demo (no 3-minute wait)
+# 10s total: ~4s normal cruising, ~3s mixed-signal near-crash, ~0.5s pre-crash, ~2.5s crash
+TARGET_DURATION_MS = 10_000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -113,6 +113,7 @@ def save_manifest(segments: list, df: pd.DataFrame, output_path: str) -> None:
     timeline["end_ms"] = t
 
     manifest = {
+        "scenario_id": "front_collision_demo_01",
         "segments": segments,
         "timeline": timeline,
         "crash_known_at_ms": timeline.get("crash_ms"),

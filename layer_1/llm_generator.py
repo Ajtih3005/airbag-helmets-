@@ -117,10 +117,10 @@ def _call_gemini(prompt: str, api_key: str) -> list[dict]:
     """Call the Gemini API and parse the returned JSON segment list."""
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel(
-        model_name="gemini-2.0-flash",
+        model_name="gemini-3.8-flash",
         system_instruction=_SYSTEM_PROMPT,
     )
-    response = model.generate_content(prompt)
+    response = model.generate_content(prompt, request_options={"timeout": 5.0})
     raw_text = response.text.strip()
 
     # Strip markdown code fences if present
@@ -161,20 +161,20 @@ def _keyword_fallback(prompt: str) -> list[dict]:
     if unique_events[0] not in normal_events:
         unique_events.insert(0, "highway")
 
-    # Build segment list with realistic cinematic durations
-    # Normal ride: 8-12 seconds so you can SEE the bike riding
-    # Near-crash:  3-4 seconds — enough to feel the tension
-    # Crash:       3 seconds   — clear impact and deploy
+    # Deduplicate crash events so there is at most one crash event at the end
+    crash_in_list = [e for e in unique_events if e in _CRASH_EVENTS]
+    non_crash = [e for e in unique_events if e not in _CRASH_EVENTS]
+    final_events = non_crash + ([crash_in_list[-1]] if crash_in_list else [])
+
     segments = []
-    for event in unique_events:
-        if event in {"crash", "highside", "lowside", "front_collision", "rear_collision"}:
-            # Always inject pre_crash before crash
+    for event in final_events:
+        if event in _CRASH_EVENTS:
             segments.append({"event": "pre_crash", "duration_ms": 300})
-            dur = 3000
+            dur = 2500
         elif event in {"pothole", "swerve", "brake", "gravel"}:
-            dur = 3500
+            dur = 2700
         else:
-            dur = 9000    # 9 seconds of normal riding
+            dur = 4500    # ~4.5 seconds of normal riding
         segments.append({"event": event, "duration_ms": dur})
 
     return segments

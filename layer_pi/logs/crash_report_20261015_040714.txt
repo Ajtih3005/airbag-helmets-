@@ -1,0 +1,36 @@
+
+================================================================================
+          SMART AIRBAG HELMET — POST-CRASH ANALYSIS REPORT
+================================================================================
+  Generated       : 2026-10-15 04:07:14
+  Session ID      : 20261015_040714
+================================================================================
+
+  DEPLOYMENT SUMMARY
+  ------------------
+  Deployment Status    : AIRBAG DEPLOYED
+  Reason               : ML_SUPERIOR_CRASH (prob=85.2%, count=3)
+  Crash Onset          : 32750.0 ms
+  Airbag Deployed At   : 32750.0 ms
+  Detection Latency    : 0.0 ms
+  WITHIN SPEC (<20ms)
+
+================================================================================
+  CRASH METRICS (from 60s Black Box RAM Buffer)
+================================================================================
+  Duration in Buffer   : 32.75 s  (32,751 samples)
+  Peak Accel (MPU6050) : 1.64 g
+  Peak Accel (ADXL377) : 3.13 g  (High-Impact Sensor)
+  Peak Gyro Rate       : 78.1 °/s
+  Max Jerk             : 8117.1 m/s³
+  Crash Duration       : 91 ms
+
+================================================================================
+  SEVERITY CLASSIFICATION
+================================================================================
+  >> LOW (Minor incident) <<
+
+================================================================================
+  Seek immediate medical attention and do not remove the helmet until
+  medical personnel have assessed potential neck/head injuries.
+================================================================================

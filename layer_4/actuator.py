@@ -1,7 +1,8 @@
-﻿import time
+import time
+import threading
 
 # Pin Configuration
-AIRBAG_PIN       = 17      # BCM - MOSFET gate -> CO2 solenoid valve
+AIRBAG_PIN       = 17      # BCM - MOSFET gate -> CO2 solenoid valve / relay
 WARNING_PIN      = 27      # BCM - LED / buzzer -> near-crash warning
 SIM800L_PORT     = '/dev/ttyAMA0'
 SIM800L_BAUD     = 9600
@@ -10,22 +11,16 @@ EMERGENCY_NUMBER = '+91XXXXXXXXXX'
 
 class ActuatorEngine:
     """
-    Raspberry Pi hardware actuation for CO2 airbag solenoid valve and alert systems.
+    Raspberry Pi hardware actuation for CO2 airbag solenoid valve, relay switch, and alert systems.
 
     Safety design:
       - Airbag deployment is DISARMED by default (airbag_armed=False).
       - Physical CO2 inflation requires explicit hardware configuration AND
-        a software safety interlock (airbag_armed=True). A software flag
-        alone is insufficient; physical normally-open safety switches or
-        an independent watchdog are required in any real deployment.
+        a software safety interlock (airbag_armed=True).
+      - When fired, relay switch automatically closes (turns LOW) after 10 seconds
+        to prevent coil overheating and return to a safe state.
       - Warning/buzzer output is available in all modes (simulation and hardware).
-      - No external caller can arm the airbag through browser WebSocket messages.
-      - Reset, reconnect, or new simulation sessions never re-arm the airbag.
       - GPIO cleanup happens on shutdown and error.
-
-    For the initial integrated demo:
-      - Only warning/buzzer output is tested.
-      - CO2 inflation prototype is physically disarmed.
     """
 
     def __init__(self,
@@ -47,13 +42,16 @@ class ActuatorEngine:
 
         # SAFETY: airbag_armed=False by default.
         # Must be explicitly set True AND gpio_ready must be True to allow deployment.
-        # Never set this True from browser/WebSocket message paths.
         self.airbag_armed = airbag_armed
 
         # Deployment state - one-shot safety lock
         self.deployed       = False
         self.deploy_time    = None
         self.deploy_reason  = None
+
+        # Relay auto-shutoff timer (10s)
+        self._relay_timer   = None
+        self.relay_open     = False
 
         # Warning rate-limit state
         self._last_pulse = 0.0
@@ -121,17 +119,37 @@ class ActuatorEngine:
             self.pulse_warning(n_pulses=5, pulse_ms=100)
             return True  # Deployment was attempted (and blocked by safety)
 
+        self.relay_open = True
         if self.gpio_ready:
             try:
                 import RPi.GPIO as GPIO
                 GPIO.output(self.airbag_pin, GPIO.HIGH)
-                print(f'[GPIO] BCM{self.airbag_pin} -> HIGH (CO2 valve OPEN)')
+                print(f'[GPIO] BCM{self.airbag_pin} -> HIGH (Relay switch ON / CO2 valve OPEN)')
             except Exception as e:
                 print(f'[GPIO ERROR] Failed to set pin HIGH: {e}')
         else:
-            print('[SIMULATION] CO2 solenoid valve opened / Airbag inflating...')
+            print('[SIMULATION] Relay switch ON (CO2 solenoid valve opened / Airbag inflating...)')
+
+        # Automatically close relay after 10s to protect coil and restore safe state
+        self._relay_timer = threading.Timer(10.0, self._auto_close_relay)
+        self._relay_timer.daemon = True
+        self._relay_timer.start()
+        print('[ACTUATOR] ⏱️ Relay auto-close timer scheduled: switch will automatically close in 10.0s.')
 
         return True
+
+    def _auto_close_relay(self):
+        """Automatically de-energizes the relay / closes the CO2 valve after 10s."""
+        self.relay_open = False
+        if self.gpio_ready:
+            try:
+                import RPi.GPIO as GPIO
+                GPIO.output(self.airbag_pin, GPIO.LOW)
+                print(f'[GPIO] BCM{self.airbag_pin} -> LOW (Relay switch automatically CLOSED after 10s)')
+            except Exception as e:
+                print(f'[GPIO ERROR] Failed to reset pin LOW: {e}')
+        else:
+            print('[SIMULATION] Relay switch automatically CLOSED after 10s (safe state restored)')
 
     # Near-Crash Warning
 
@@ -203,9 +221,13 @@ class ActuatorEngine:
 
     def cleanup(self):
         """Release all GPIO pins safely."""
+        if self._relay_timer and self._relay_timer.is_alive():
+            self._relay_timer.cancel()
         if self.gpio_ready:
             try:
                 import RPi.GPIO as GPIO
+                GPIO.output(self.airbag_pin, GPIO.LOW)
+                GPIO.output(self.warning_pin, GPIO.LOW)
                 GPIO.cleanup()
                 print('[HARDWARE] GPIO cleanup complete.')
             except Exception:

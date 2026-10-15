@@ -98,26 +98,33 @@ async def handle_crash_test(ws, data, actuator, hardware):
     print(f'[PI CLIENT] actuator_status sent: {ack[chr(115)+chr(116)+chr(97)+chr(116)+chr(117)+chr(115)]}')
 
 
-async def run_ws_client(server_url, hardware, phone):
+async def run_ws_client(server_url, hardware, phone, arm=False):
     try:
         import websockets
     except ImportError:
         print('[PI CLIENT] websockets not installed. Run: pip install websockets')
         sys.exit(1)
 
+    lock_file = os.path.join(ROOT, 'AIRBAG_DEPLOYED.lock')
+    if os.path.exists(lock_file):
+        os.remove(lock_file)
+        print('  [SAFETY] Cleared stale AIRBAG_DEPLOYED.lock')
+
     detector    = Layer3Detector()
-    actuator    = ActuatorEngine(hardware=hardware, emergency_number=phone)
+    actuator    = ActuatorEngine(hardware=hardware, emergency_number=phone, airbag_armed=arm)
     deploy_data = None
 
     print('=' * 60)
     print('  SMART AIRBAG HELMET - RASPBERRY PI WebSocket CLIENT')
     print(f'  Connecting to : {server_url}')
     print(f'  Hardware GPIO : {"YES" if hardware else "SIMULATION"}')
+    print(f'  Relay Switch  : {"ARMED (will trigger Pin 17, auto-close 10s)" if arm else "DISARMED (safe mode)"}')
     print('=' * 60)
 
-    async with websockets.connect(server_url) as ws:
+    async with websockets.connect(server_url, ping_interval=30, ping_timeout=30) as ws:
         print('[PI CLIENT] Connected to server.')
-        await ws.send(json.dumps({'type': 'pi_connect'}))
+        pi_type = 'pi' if hardware else 'simulator'
+        await ws.send(json.dumps({'type': 'pi_connect', 'pi_type': pi_type}))
 
         async for raw in ws:
             msg = json.loads(raw)
@@ -125,10 +132,20 @@ async def run_ws_client(server_url, hardware, phone):
 
             # New scenario starting
             if mtype == 'playback_start':
-                print(f'[PI CLIENT] Scenario starting: {msg.get(chr(115)+chr(99)+chr(101)+chr(110)+chr(97)+chr(114)+chr(105)+chr(111),"?")} | Biome: {msg.get(chr(98)+chr(105)+chr(111)+chr(109)+chr(101),"?")}')
-                detector    = Layer3Detector()
-                actuator    = ActuatorEngine(hardware=hardware, emergency_number=phone)
-                deploy_data = None
+                sc_name = msg.get('scenario', '?')
+                sc_biome = msg.get('biome', '?')
+                print('\n' + '=' * 65)
+                print(f'  [PI CLIENT] SCENARIO STARTED: {sc_name}')
+                print(f'  Biome: {sc_biome} | Samples Expected: {msg.get("rows", 0):,}')
+                print('=' * 65)
+                if os.path.exists(lock_file):
+                    os.remove(lock_file)
+                detector       = Layer3Detector()
+                actuator       = ActuatorEngine(hardware=hardware, emergency_number=phone, airbag_armed=arm)
+                deploy_data    = None
+                first_crash_ts = None
+                sample_count   = 0
+                last_print_ms  = 0
 
             # Mode A: Forced crash test event (from server, validated)
             elif mtype == 'crash_test_requested':
@@ -136,6 +153,7 @@ async def run_ws_client(server_url, hardware, phone):
 
             # Process sensor frame — ML detector runs independently
             elif mtype == 'sensor_frame' and not actuator.deployed:
+                sample_count += 1
                 sample = {
                     'ax': msg['ax'], 'ay': msg['ay'], 'az': msg['az'],
                     'gx': msg['gx'], 'gy': msg['gy'], 'gz': msg['gz'],
@@ -144,9 +162,22 @@ async def run_ws_client(server_url, hardware, phone):
                 t_ms  = msg.get('t_ms', 0)
                 t_s   = t_ms / 1000.0
 
+                # Track first ground-truth crash onset for L5 latency reporting
+                if msg.get('label', 0) == 2 and first_crash_ts is None:
+                    first_crash_ts = t_ms
+
                 t0     = time.perf_counter()
                 result = detector.process_sample(sample, current_time_s=t_s)
                 lat_ms = (time.perf_counter() - t0) * 1000
+
+                g_force  = math.sqrt(sample['ax']**2 + sample['ay']**2 + sample['az']**2) / 9.81
+                lean_deg = abs(sample['ay'] * 4.5)
+
+                # Periodic live telemetry output (every 1000ms of data)
+                if t_ms - last_print_ms >= 1000:
+                    last_print_ms = t_ms
+                    p1_str = 'CRASH' if result['p1_label'] == 2 else 'NEAR' if result['p1_label'] == 1 else 'NORMAL'
+                    print(f'  [TELEMETRY] t={t_s:5.2f}s | G: {g_force:4.1f}g | Lean: {lean_deg:4.1f}° | P1: {p1_str:6s} | P2 Gate: {result.get("gate_count", 0)}/3 | Lat: {lat_ms:.2f}ms')
 
                 # Near-crash warning (from real ML, not from forced test)
                 if result['p1_label'] == 1:
@@ -168,7 +199,7 @@ async def run_ws_client(server_url, hardware, phone):
                     'gate_count': int(result.get('gate_count') or 0),
                     'latency_ms': round(lat_ms, 2),
                     'deployed'  : False,
-                    'source'    : 'ml_detector',  # always from real ML, not forced test
+                    'source'    : 'ml_detector',
                 }
                 await ws.send(json.dumps(verdict))
 
@@ -176,10 +207,9 @@ async def run_ws_client(server_url, hardware, phone):
                 if result['new_deploy']:
                     fired = actuator.deploy_airbag(reason=result.get('decision_reason', 'ML_CRASH'))
                     if fired:
-                        print(f'\n[PI CLIENT] *** AIRBAG DEPLOYED (ML) at t={t_ms}ms ***')
                         actuator.send_emergency_sms()
                         bb = list(detector.blackbox)
-                        peak_g = max((math.sqrt(e.get('hg_ax',0)**2+e.get('hg_ay',0)**2+e.get('hg_az',0)**2)/9.81 for e in bb), default=0)
+                        peak_g = max((math.sqrt(e.get('hg_ax',0)**2+e.get('hg_ay',0)**2+e.get('hg_az',0)**2)/9.81 for e in bb), default=g_force)
                         peak_gyro = max((math.sqrt(e.get('gx',0)**2+e.get('gy',0)**2+e.get('gz',0)**2) for e in bb), default=0)
                         deploy_data = {'t_ms': t_ms, 'reason': result.get('decision_reason','ML_CRASH'), 'blackbox': bb, 'peak_g': round(peak_g,2), 'peak_gyro': round(peak_gyro,1)}
                         verdict['deployed']  = True
@@ -187,29 +217,48 @@ async def run_ws_client(server_url, hardware, phone):
                         verdict['peak_g']    = deploy_data['peak_g']
                         verdict['peak_gyro'] = deploy_data['peak_gyro']
                         await ws.send(json.dumps(verdict))
+
+                        crash_onset = first_crash_ts if first_crash_ts is not None else t_ms
+                        det_lat     = t_ms - crash_onset
+
+                        print('\n' + '=' * 65)
+                        print('  💥 CRASH DETECTED — AIRBAG DEPLOYED!')
+                        print(f'  Deploy Timestamp : {t_ms:.1f} ms ({t_ms/1000:.2f}s)')
+                        print(f'  Detection Latency: {det_lat:.1f} ms')
+                        print(f'  Gate Status      : {result.get("gate_count", 3)}/3 (Confirmed by Multi-Path ML)')
+                        print(f'  Peak Impact G    : {peak_g:.1f} g')
+                        print(f'  Peak Gyro        : {peak_gyro:.1f} deg/s')
+                        print(f'  Hardware Action  : Pin 17 Relay ENERGIZED (10.0s auto-close timer active)')
+                        print('=' * 65)
+
                         try:
-                            metrics = run_post_crash_analysis(blackbox_entries=bb, deploy_ts_ms=t_ms, crash_onset_ms=t_ms, latency_ms=lat_ms, reason=deploy_data['reason'])
-                            await ws.send(json.dumps({'type': 'pi_verdict', 't_ms': t_ms, 'deployed': True, 'severity': metrics.get('severity','SEVERE'), 'peak_g': metrics.get('peak_accel_hg_g',deploy_data['peak_g']), 'peak_gyro': metrics.get('peak_gyro_deg_per_s',deploy_data['peak_gyro']), 'latency_ms': lat_ms, 'deploy_ts': t_ms, 'gate_count': int(result['gate_count']), 'p1_label': int(result['p1_label']), 'p2_label': int(result['p2_label']), 'det_score': float(result['det_score']), 'source': 'ml_detector'}))
+                            metrics = run_post_crash_analysis(blackbox_entries=bb, deploy_ts_ms=t_ms, crash_onset_ms=crash_onset, latency_ms=det_lat, reason=deploy_data['reason'])
+                            await ws.send(json.dumps({'type': 'pi_verdict', 't_ms': t_ms, 'deployed': True, 'severity': metrics.get('severity','SEVERE'), 'peak_g': metrics.get('peak_accel_hg_g',deploy_data['peak_g']), 'peak_gyro': metrics.get('peak_gyro_deg_per_s',deploy_data['peak_gyro']), 'latency_ms': round(det_lat,2), 'deploy_ts': t_ms, 'gate_count': int(result['gate_count']), 'p1_label': int(result['p1_label']), 'p2_label': int(result['p2_label']), 'det_score': float(result['det_score']), 'source': 'ml_detector'}))
                         except Exception as e:
                             print(f'[PI CLIENT] Layer 5 error: {e}')
 
             elif mtype == 'playback_done':
-                print('[PI CLIENT] Scenario complete.')
-                if not actuator.deployed:
-                    print('[PI CLIENT] No crash detected - safe ride.')
+                print('\n' + '=' * 65)
+                if actuator.deployed:
+                    print('  SCENARIO COMPLETE — AIRBAG ALREADY DEPLOYED & LOGGED')
+                else:
+                    print('  ✅ RIDE COMPLETED SAFELY — NO CRASH DETECTED')
+                    print(f'  Total Samples Processed: {sample_count:,}')
+                print('=' * 65 + '\n')
 
         actuator.cleanup()
 
 
-def run_standalone(csv_path, hardware, phone):
+def run_standalone(csv_path, hardware, phone, arm=False):
     import pandas as pd
     import math
     from l3.detector import Layer3Detector
 
     print('=' * 65)
     print('  RASPBERRY PI STANDALONE MODE (Offline ML Execution)')
-    print(f'  Sensor CSV : {csv_path}')
-    print(f'  Hardware   : {"REAL GPIO" if hardware else "SIMULATION"}')
+    print(f'  Sensor CSV   : {csv_path}')
+    print(f'  Hardware     : {"REAL GPIO" if hardware else "SIMULATION"}')
+    print(f'  Relay Switch : {"ARMED (will trigger Pin 17, auto-close 10s)" if arm else "DISARMED (safe mode)"}')
     print('=' * 65)
 
     if not os.path.exists(csv_path):
@@ -222,7 +271,7 @@ def run_standalone(csv_path, hardware, phone):
         print('  [SAFETY] Cleared stale AIRBAG_DEPLOYED.lock')
 
     detector   = Layer3Detector()
-    actuator   = ActuatorEngine(hardware=hardware, emergency_number=phone)
+    actuator   = ActuatorEngine(hardware=hardware, emergency_number=phone, airbag_armed=arm)
     df         = pd.read_csv(csv_path)
     total_rows = len(df)
     print(f'  Loaded {total_rows:,} sensor samples (~{total_rows/1000:.1f}s of data)\n')
@@ -250,11 +299,11 @@ def run_standalone(csv_path, hardware, phone):
         g_force  = math.sqrt(sample['ax']**2 + sample['ay']**2 + sample['az']**2) / 9.81
         lean_deg = abs(sample['ay'] * 4.5)
 
-        if idx - last_print >= 2000:
+        if idx - last_print >= 1000:
             last_print = idx
             pct  = (idx / total_rows) * 100
             p1n  = 'CRASH' if result['p1_label'] == 2 else 'NEAR' if result['p1_label'] == 1 else 'NORMAL'
-            print(f'  [{pct:5.1f}%] t={t_ms/1000:6.1f}s | G: {g_force:4.1f}g | Lean: {lean_deg:4.1f} | {p1n} ({lat_ms:.2f}ms)')
+            print(f'  [{pct:5.1f}%] t={t_ms/1000:5.2f}s | G: {g_force:4.1f}g | Lean: {lean_deg:4.1f}° | P1: {p1n:6s} | P2 Gate: {result.get("gate_count", 0)}/3 | Lat: {lat_ms:.2f}ms')
 
         if result['p1_label'] in (1, 2) and result.get('det_score', 0) >= 0.15:
             actuator.pulse_warning(n_pulses=1, pulse_ms=50)
@@ -267,14 +316,15 @@ def run_standalone(csv_path, hardware, phone):
             bb       = list(detector.blackbox)
             peak_g   = max((math.sqrt(e.get('hg_ax',0)**2+e.get('hg_ay',0)**2+e.get('hg_az',0)**2)/9.81 for e in bb), default=g_force)
             peak_gyro = max((math.sqrt(e.get('gx',0)**2+e.get('gy',0)**2+e.get('gz',0)**2) for e in bb), default=0)
-            print('=' * 65)
-            print('  CRASH DETECTED - AIRBAG DEPLOYED!')
+            print('\n' + '=' * 70)
+            print('  💥 CRASH DETECTED — AIRBAG DEPLOYED!')
             print(f'  Deploy Timestamp : {t_ms:.1f} ms ({t_ms/1000:.2f}s)')
             print(f'  Detection Latency: {det_lat:.1f} ms')
-            print(f'  Gate             : {result.get(chr(103)+chr(97)+chr(116)+chr(101)+chr(95)+chr(99)+chr(111)+chr(117)+chr(110)+chr(116),3)}/3 (Confirmed)')
+            print(f'  Gate Status      : {result.get("gate_count", 3)}/3 (Confirmed by Multi-Path ML)')
             print(f'  Peak Impact G    : {peak_g:.1f} g')
             print(f'  Peak Gyro        : {peak_gyro:.1f} deg/s')
-            print('=' * 65)
+            print(f'  Hardware Action  : Pin 17 Relay ENERGIZED (10.0s auto-close timer active)')
+            print('=' * 70)
             run_post_crash_analysis(bb, t_ms, first_crash, det_lat, result.get('decision_reason','ML_CRASH'))
             break
 
@@ -289,17 +339,23 @@ def run_standalone(csv_path, hardware, phone):
 
 def main():
     p = argparse.ArgumentParser(description='Raspberry Pi Layer Pi Client')
-    p.add_argument('--server',     default='ws://localhost:5500/ws')
-    p.add_argument('--hardware',   action='store_true')
-    p.add_argument('--phone',      default='+91XXXXXXXXXX')
-    p.add_argument('--standalone', action='store_true')
-    p.add_argument('--csv',        default='../data/pre_decided_sensor_data.csv')
+    p.add_argument('--server',     default='ws://localhost:5500/ws', help='WebSocket server URL')
+    p.add_argument('--hardware',   action='store_true', help='Use physical GPIO pins on Raspberry Pi')
+    p.add_argument('--arm',        action='store_true', help='Arm physical relay switch on Pin 17 (auto-closes in 10s)')
+    p.add_argument('--standalone', action='store_true', help='Run in standalone mode directly from CSV')
+    p.add_argument('--phone',      default=None,        help='Emergency phone number for SMS alert')
+    default_csv = os.path.join(ROOT, 'data', 'pre_decided_sensor_data.csv')
+    if not os.path.exists(default_csv):
+        default_csv = os.path.join(ROOT, '..', 'data', 'pre_decided_sensor_data.csv')
+    if not os.path.exists(default_csv):
+        default_csv = os.path.join(ROOT, 'pre_decided_sensor_data.csv')
+    p.add_argument('--csv',        default=default_csv, help='Path to sensor CSV file')
     args = p.parse_args()
 
     if args.standalone:
-        run_standalone(args.csv, args.hardware, args.phone)
+        run_standalone(args.csv, args.hardware, args.phone, arm=args.arm)
     else:
-        asyncio.run(run_ws_client(args.server, args.hardware, args.phone))
+        asyncio.run(run_ws_client(args.server, args.hardware, args.phone, arm=args.arm))
 
 
 if __name__ == '__main__':

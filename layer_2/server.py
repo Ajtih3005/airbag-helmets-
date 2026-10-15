@@ -12,12 +12,13 @@ MANIFEST_PATH = ROOT / 'data' / 'scenario_manifest.json'
 
 ALLOWED_SCENARIO_IDS = {'front_collision_demo_01', 'existing'}
 PLAYBACK_FPS  = 20
-FRAME_STEP    = 10
+FRAME_STEP    = 5   # 5 rows per frame -> 10,000 rows / 5 / 20fps = 100s total ride
 DEDUP_TTL_S   = 300
 
 browser_clients = set()
 browser_ready   = False
 pi_client       = None
+pi_type         = 'pi'  # 'pi' or 'simulator'
 playback_task   = None
 current_df      = None
 current_meta    = {}
@@ -92,6 +93,65 @@ async def broadcast(msg):
             dead.add(ws)
     browser_clients.difference_update(dead)
 
+async def trigger_playback(csv_path=None, biome='hill_station', scenario='front_collision_demo_01'):
+    global current_df, current_meta, current_manifest, playback_task, browser_ready, pi_client
+    import pandas as pd
+    browser_ready = False
+    csv_file = csv_path or str(CSV_PATH)
+    if not os.path.exists(csv_file):
+        log.error(f'[SERVER] CSV not found: {csv_file}')
+        return False, f'CSV not found: {csv_file}'
+    try:
+        current_df = pd.read_csv(csv_file)
+    except Exception as e:
+        log.error(f'[SERVER] CSV read error: {e}')
+        return False, f'CSV read error: {e}'
+
+    current_meta = {'biome': biome, 'scenario': scenario, 'csv_path': csv_file}
+    current_manifest = {}
+    if MANIFEST_PATH.exists():
+        try:
+            with open(MANIFEST_PATH, 'r', encoding='utf-8') as mf:
+                current_manifest = json.load(mf)
+            log.info(f'[SERVER] Manifest loaded: {len(current_manifest.get("segments", []))} segments')
+        except Exception as e:
+            log.warning(f'[SERVER] Manifest load error: {e}')
+
+    dur = float(current_df['timestamp_ms'].max()) if 'timestamp_ms' in current_df.columns else len(current_df)
+    start_msg = json.dumps({'type': 'playback_start', 'rows': len(current_df), 'duration_ms': dur, 'manifest': current_manifest, **current_meta})
+    await broadcast(start_msg)
+    if pi_client and not pi_client.closed:
+        try:
+            await pi_client.send_str(start_msg)
+        except Exception:
+            pi_client = None
+
+    if playback_task and not playback_task.done():
+        playback_task.cancel()
+    playback_task = asyncio.create_task(playback_csv())
+    return True, f'Playback started ({len(current_df):,} samples)'
+
+async def handle_api_start(request):
+    """Direct headless trigger: stream CSV sensor data from L2 to Pi without opening a browser."""
+    data = {}
+    if request.can_read_body:
+        try:
+            data = await request.json()
+        except Exception:
+            pass
+    csv_path = data.get('csv_path') or str(CSV_PATH)
+    biome    = data.get('biome', 'hill_station')
+    scenario = data.get('scenario', 'front_collision_demo_01')
+    ok, msg  = await trigger_playback(csv_path=csv_path, biome=biome, scenario=scenario)
+    pi_active = pi_client is not None and not pi_client.closed
+    return web.json_response({
+        'success': ok,
+        'message': msg,
+        'pi_connected': pi_active,
+        'pi_type': pi_type if pi_active else None,
+        'browser_clients_count': len(browser_clients),
+    })
+
 async def playback_csv():
     global current_df, pi_client, browser_ready, current_manifest
     if current_df is None:
@@ -102,36 +162,57 @@ async def playback_csv():
             return str(row.get('phase', 'Normal'))
         lbl = int(row.get('label', 0))
         return ['Normal', 'Near-Crash', 'Crash'][lbl] if lbl < 3 else 'Normal'
-    for _ in range(50):
-        if browser_ready:
-            break
-        await asyncio.sleep(0.1)
-    if not browser_ready:
-        log.warning('[SERVER] browser_ready not received, starting anyway')
-    await asyncio.sleep(0.3)
+    # If a browser is connected, wait briefly for 3D world ready; otherwise stream immediately
+    if len(browser_clients) > 0:
+        for _ in range(50):
+            if browser_ready:
+                break
+            await asyncio.sleep(0.1)
+        if not browser_ready:
+            log.warning('[SERVER] browser_ready not received, starting anyway')
+    else:
+        log.info('[SERVER] Headless mode: no browser connected -> streaming to Pi immediately')
+    await asyncio.sleep(0.1)
     interval = 1.0 / PLAYBACK_FPS
     rows = len(current_df)
     has_ts = 'timestamp_ms' in current_df.columns
     log.info(f'[SERVER] Playback: {rows:,} rows -> {rows//FRAME_STEP} frames @ {PLAYBACK_FPS}fps (~{rows//FRAME_STEP/PLAYBACK_FPS:.1f}s)')
     for i in range(0, rows, FRAME_STEP):
-        row  = current_df.iloc[i]
-        t_ms = float(row['timestamp_ms']) if has_ts else float(i)
-        frame = {
+        display_row = current_df.iloc[i]
+        t_ms = float(display_row['timestamp_ms']) if has_ts else float(i)
+
+        # --- Browser: 1 subsampled frame per FRAME_STEP rows (20fps smooth viz) ---
+        browser_frame = {
             'type': 'sensor_frame', 't_ms': t_ms,
-            'label': int(row.get('label', 0)), 'phase': get_phase(row),
-            'ax': float(row['ax']), 'ay': float(row['ay']), 'az': float(row['az']),
-            'gx': float(row['gx']), 'gy': float(row['gy']), 'gz': float(row['gz']),
-            'hg_ax': float(row['hg_ax']), 'hg_ay': float(row['hg_ay']), 'hg_az': float(row['hg_az']),
+            'label': int(display_row.get('label', 0)), 'phase': get_phase(display_row),
+            'ax': float(display_row['ax']), 'ay': float(display_row['ay']), 'az': float(display_row['az']),
+            'gx': float(display_row['gx']), 'gy': float(display_row['gy']), 'gz': float(display_row['gz']),
+            'hg_ax': float(display_row['hg_ax']), 'hg_ay': float(display_row['hg_ay']), 'hg_az': float(display_row['hg_az']),
             'progress': round(i / rows, 4),
         }
-        raw = json.dumps(frame)
-        await broadcast(raw)
+        await broadcast(json.dumps(browser_frame))
+
+        # --- Pi: ALL rows in this window (full resolution for L3 ML detector) ---
         if pi_client and not pi_client.closed:
-            try:
-                await pi_client.send_str(raw)
-            except Exception:
-                pi_client = None
+            for j in range(i, min(i + FRAME_STEP, rows)):
+                pi_row = current_df.iloc[j]
+                pi_t_ms = float(pi_row['timestamp_ms']) if has_ts else float(j)
+                pi_frame = {
+                    'type': 'sensor_frame', 't_ms': pi_t_ms,
+                    'label': int(pi_row.get('label', 0)), 'phase': get_phase(pi_row),
+                    'ax': float(pi_row['ax']), 'ay': float(pi_row['ay']), 'az': float(pi_row['az']),
+                    'gx': float(pi_row['gx']), 'gy': float(pi_row['gy']), 'gz': float(pi_row['gz']),
+                    'hg_ax': float(pi_row['hg_ax']), 'hg_ay': float(pi_row['hg_ay']), 'hg_az': float(pi_row['hg_az']),
+                    'progress': round(j / rows, 4),
+                }
+                try:
+                    await pi_client.send_str(json.dumps(pi_frame))
+                except Exception:
+                    pi_client = None
+                    break
+
         await asyncio.sleep(interval)
+
     done = json.dumps({'type': 'playback_done'})
     await broadcast(done)
     if pi_client and not pi_client.closed:
@@ -191,7 +272,7 @@ async def handle_ml_evaluation_marker(ws, data):
     await broadcast(json.dumps({'type': 'ml_evaluation_marker', 'event_id': event_id, 'scenario_id': scenario_id, 'manifest_crash_ms': manifest_crash_ms}))
 
 async def handle_ws(request):
-    global current_df, playback_task, pi_client, current_meta, current_manifest, browser_ready
+    global current_df, playback_task, pi_client, current_meta, current_manifest, browser_ready, pi_type
     ws = web.WebSocketResponse(heartbeat=30)
     await ws.prepare(request)
     client_type = 'unknown'
@@ -208,45 +289,20 @@ async def handle_ws(request):
                     client_type = 'browser'
                     browser_clients.add(ws)
                     log.info(f'[SERVER] Browser connected ({len(browser_clients)} total)')
-                    await ws.send_str(json.dumps({'type': 'server_hello', 'pi_connected': pi_client is not None and not pi_client.closed, 'has_data': current_df is not None}))
+                    await ws.send_str(json.dumps({'type': 'server_hello', 'pi_connected': pi_client is not None and not pi_client.closed, 'pi_type': pi_type, 'has_data': current_df is not None}))
                 elif mtype == 'pi_connect':
                     client_type = 'pi'
                     pi_client   = ws
-                    log.info('[SERVER] Raspberry Pi connected!')
-                    await broadcast(json.dumps({'type': 'pi_status', 'connected': True}))
+                    pi_type     = data.get('pi_type', 'pi')
+                    log.info(f'[SERVER] Pi client connected (type={pi_type})!')
+                    await broadcast(json.dumps({'type': 'pi_status', 'connected': True, 'pi_type': pi_type}))
                 elif mtype == 'start_playback':
-                    import pandas as pd
-                    browser_ready = False
-                    csv_path = data.get('csv_path') or str(CSV_PATH)
-                    if not os.path.exists(csv_path):
-                        await ws.send_str(json.dumps({'type': 'error', 'msg': f'CSV not found: {csv_path}'}))
-                        continue
-                    try:
-                        current_df = pd.read_csv(csv_path)
-                    except Exception as e:
-                        await ws.send_str(json.dumps({'type': 'error', 'msg': f'CSV read error: {e}'}))
-                        continue
-                    current_meta = {'biome': data.get('biome', 'hill_station'), 'scenario': data.get('scenario', ''), 'csv_path': csv_path}
-                    current_manifest = {}
-                    if MANIFEST_PATH.exists():
-                        try:
-                            with open(MANIFEST_PATH, 'r', encoding='utf-8') as mf:
-                                current_manifest = json.load(mf)
-                            log.info(f'[SERVER] Manifest loaded: {len(current_manifest.get(chr(115)+chr(101)+chr(103)+chr(109)+chr(101)+chr(110)+chr(116)+chr(115), []))} segments')
-                        except Exception as e:
-                            log.warning(f'[SERVER] Manifest load error: {e}')
-                    dur = float(current_df['timestamp_ms'].max()) if 'timestamp_ms' in current_df.columns else len(current_df)
-                    start_msg = json.dumps({'type': 'playback_start', 'rows': len(current_df), 'duration_ms': dur, 'manifest': current_manifest, **current_meta})
-                    await broadcast(start_msg)
-                    if pi_client and not pi_client.closed:
-                        try:
-                            await pi_client.send_str(start_msg)
-                        except Exception:
-                            pi_client = None
-                    if playback_task and not playback_task.done():
-                        playback_task.cancel()
-                    playback_task = asyncio.create_task(playback_csv())
-                    # NOTE: No subprocess launch here. Pi WS client is sole interactive ML owner.
+                    csv_p = data.get('csv_path') or str(CSV_PATH)
+                    biome = data.get('biome', 'hill_station')
+                    scen  = data.get('scenario', 'front_collision_demo_01')
+                    ok, res = await trigger_playback(csv_path=csv_p, biome=biome, scenario=scen)
+                    if not ok:
+                        await ws.send_str(json.dumps({'type': 'error', 'msg': res}))
                 elif mtype == 'crash_test_requested':
                     if client_type == 'browser':
                         await handle_crash_test_requested(ws, data)
@@ -284,6 +340,8 @@ def build_app():
     app.router.add_get('/dashboard', handle_dashboard)
     app.router.add_get('/dashboard.html', handle_dashboard)
     app.router.add_get('/api/manifest', handle_manifest)
+    app.router.add_post('/api/start', handle_api_start)
+    app.router.add_get('/api/start', handle_api_start)
     app.router.add_get('/{name}', handle_static)
     app.router.add_post('/api/generate', handle_generate)
     app.router.add_get('/ws', handle_ws)

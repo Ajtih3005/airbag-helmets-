@@ -39,9 +39,9 @@ CONSECUTIVE_WINDOWS_REQ = 3
 BLACKBOX_SECONDS        = 60
 SAMPLE_RATE_HZ          = 1000
 BLACKBOX_MAX            = SAMPLE_RATE_HZ * BLACKBOX_SECONDS
-BLACKBOX_MIN_RATIO      = 0.05
+BLACKBOX_MIN_RATIO      = 0.15  # Raised from 0.05 → 15% to suppress weak false positives
 LABEL_NAME              = {0: "Normal", 1: "Near-Crash", 2: "CRASH"}
-WIN_STRIDE              = 200  # Evaluate window model every 200 samples (200ms)
+WIN_STRIDE              = STRIDE  # Use stride from feature_engineering (25 samples = 25ms)
 
 
 class Layer3Detector:
@@ -140,14 +140,12 @@ class Layer3Detector:
         det_score = p1_res["det_score"]
         trend = p1_res["trend"]
 
-        # Sentinel Gate Acceleration / Recovery Rule
-        # Only boost gate when Sentinel actually predicts crash/near-crash AND trend is rising
-        if p1_label in (1, 2) and (trend >= 0.20 or det_score >= 0.35):
-            if self.consecutive_crash == 0:
-                self.consecutive_crash = 2  # Boost gate to 2/3 — forces Path 2 evaluation next cycle
-                self.samples_since_pred = WIN_STRIDE  # Trigger immediate Path 2 evaluation
+        # Sentinel Acceleration: trigger immediate P2 evaluation on rising deterioration
+        # But do NOT jump gate counter — gate can only increment via P2 window confirmations
+        if p1_label in (1, 2) and (trend >= 0.25 or det_score >= 0.45):
+            self.samples_since_pred = WIN_STRIDE  # Force P2 to evaluate next cycle
 
-        elif p1_label == 0 and trend <= -0.20 and self.consecutive_crash > 0:
+        elif p1_label == 0 and trend <= -0.25 and self.consecutive_crash > 0:
             self.consecutive_crash = 0  # Recovery: sensor stabilized, reset gate
 
         # --- PATH 2: Window Classifier (50ms context) -------------------------
@@ -199,10 +197,12 @@ class Layer3Detector:
 
         # --- Fast Physics Check + Arbiter ---
         phys_result = self.physics_trigger.evaluate_sample(sample, t_now)
-        # Wire physics result into arbiter so the 25g extreme override is not bypassed
+        # Use best crash prob/label from both P1 and P2 so the window RF influences deploy
+        best_crash_prob = max(p1_crash, p2_crash if p2_crash is not None else 0.0)
+        best_label      = max(p1_label, p2_label if p2_label is not None else 0)
         arbiter_deploy, arbiter_reason = self.arbiter.evaluate(
             phys_result,
-            ml_result={"crash_prob": p1_crash, "label": p1_label},
+            ml_result={"crash_prob": best_crash_prob, "label": best_label},
             current_sample=sample,
         )
         new_deploy = False

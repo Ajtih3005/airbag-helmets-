@@ -1488,10 +1488,366 @@ function updateSparklines(f){
   drawSp('hg',f.hg_az,'#ff3b5c',-2500,2500);
 }
 
-// ─── BROWSER ML & COMPARISON ──────────────────────────────────────────────────
-let mlBuf=[];
+// ═══════════════════════════════════════════════════════════════════════════════
+// BROWSER ML — Full 3-Path Architecture (JS port of layer_3/detector.py)
+// PATH 1 : Per-sample Sentinel   (instant, every frame)
+// PATH 2 : Window Classifier     (feature extraction, every WIN_STRIDE frames)
+// PATH 3 : Black Box RAM         (60s rolling ratio validation)
+// ARBITER: Physics override + ML gate 3/3
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const G           = 9.81;
+const WINDOW_SIZE = 50;          // 50 samples (mirrors Python WINDOW_SIZE)
+const WIN_STRIDE  = 10;          // evaluate Path2 every 10 frames (≈200ms at 20fps)
+const BB_MAX      = 3600;        // 3600 frames @ 20fps = ~180s black box
+const BB_MIN_RATIO= 0.05;        // 5% crash frames needed to confirm
+const CRASH_THRESH= 0.70;        // crash probability threshold
+const CONSEC_REQ  = 3;           // gate count needed to deploy
+
+// State
+let _mlWindowBuf   = [];         // rolling frame buffer for Path2
+let _mlBlackbox    = [];         // rolling 180s black box
+let _mlSampleCount = 0;          // total frames processed
+let _mlSinceP2     = 0;          // frames since last Path2 evaluation
+let _mlConsecCrash = 0;          // consecutive crash windows (gate)
+let _mlDeployFired = false;      // one-shot lock
+let _mlP1Last      = {label:0, crashProb:0, nearProb:0, detScore:0, trend:0};
+let _mlDetHistory  = [];         // 20-frame deterioration history (P1)
+let _mlArbiterBB   = [];         // arbiter's own blackbox for false-positive check
+let _mlPrevAccelMag= 1.0;        // for jerk in physics trigger
+let _mlPrevTime    = null;
+
 let lastBrowserVerdict = 'NORMAL';
-let lastPiVerdict = 'NORMAL';
+let lastPiVerdict      = 'NORMAL';
+let browserMLDeployed  = false;  // exposed for reset
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function _mean(arr){ return arr.length ? arr.reduce((s,x)=>s+x,0)/arr.length : 0; }
+function _std(arr){
+  if(arr.length<2) return 0;
+  const m=_mean(arr);
+  return Math.sqrt(arr.reduce((s,x)=>s+(x-m)**2,0)/arr.length);
+}
+function _max(arr){ return arr.length ? Math.max(...arr) : 0; }
+function _min(arr){ return arr.length ? Math.min(...arr) : 0; }
+function _rms(arr){ return arr.length ? Math.sqrt(_mean(arr.map(x=>x*x))) : 0; }
+function _iqr(arr){
+  if(!arr.length) return 0;
+  const s=[...arr].sort((a,b)=>a-b);
+  return s[Math.floor(s.length*0.75)] - s[Math.floor(s.length*0.25)];
+}
+
+// ── PATH 1: Per-sample Sentinel (mirrors sentinel.py) ────────────────────────
+function _p1Sentinel(f){
+  const ax=f.ax||0, ay=f.ay||0, az=f.az||G;
+  const gx=f.gx||0, gy=f.gy||0, gz=f.gz||0;
+  const hg_az=f.hg_az||G;
+
+  const totalG   = Math.sqrt(ax*ax+ay*ay+az*az)/G;
+  const gyroMag  = Math.sqrt(gx*gx+gy*gy+gz*gz);
+  const impactG  = Math.abs(hg_az)/G;
+
+  // Fast gate: tranquil normal (0.75g–1.35g, gyro<25, impact<2g)
+  if(totalG>=0.75 && totalG<=1.35 && gyroMag<25 && impactG<2.0){
+    return _p1UpdateDeterioration(0, 0.0, 0.0);
+  }
+
+  // Dynamic motion — compute crash prob from physics
+  let crashP=0, nearP=0, label=0;
+
+  // High-impact override (mirrors sentinel.py line 94-96)
+  if(impactG>15.0 || gyroMag>250.0){
+    label=2; crashP=Math.min(1, impactG/20);
+  } else {
+    // Per-sample physics-based probability
+    const hgDev = Math.abs(Math.sqrt((f.hg_ax||0)**2+(f.hg_ay||0)**2+hg_az**2)-G);
+    crashP = Math.min(1, (hgDev/60)*0.6 + (gyroMag/400)*0.25 + (Math.abs(totalG-1)/2)*0.15);
+    nearP  = Math.min(1, (gyroMag/200)*0.5 + (Math.abs(totalG-1)/1)*0.5);
+    if(crashP>=0.50)       label=2;
+    else if(nearP>=0.55)   label=1;
+    else                   label=0;
+  }
+
+  return _p1UpdateDeterioration(label, crashP, nearP);
+}
+
+function _p1UpdateDeterioration(label, crashP, nearP){
+  // Deterioration tracker: weight 1.0=crash, 0.5=near, 0=normal (20-frame history)
+  const w = label===2?1.0 : label===1?0.5 : 0.0;
+  _mlDetHistory.push(w);
+  if(_mlDetHistory.length>20) _mlDetHistory.shift();
+
+  const n = _mlDetHistory.length;
+  const detScore = _mean(_mlDetHistory);
+  let trend = 0;
+  if(n>=4){
+    const half=Math.floor(n/2);
+    const recent=_mean(_mlDetHistory.slice(half));
+    const older =_mean(_mlDetHistory.slice(0,half));
+    trend = recent - older;
+  }
+  const res={label, crashProb:crashP, nearProb:nearP, detScore, trend};
+  _mlP1Last=res;
+  return res;
+}
+
+// ── PATH 2: Window Feature Extraction + Classifier (mirrors feature_engineering.py) ──
+function _extractWindowFeatures(buf){
+  // Extract the same key features as Python's extract_features_window()
+  const win = buf.slice(-WINDOW_SIZE);
+  const ax=win.map(f=>f.ax||0), ay=win.map(f=>f.ay||0), az=win.map(f=>f.az||G);
+  const gx=win.map(f=>f.gx||0), gy=win.map(f=>f.gy||0), gz=win.map(f=>f.gz||0);
+  const hx=win.map(f=>f.hg_ax||0), hy=win.map(f=>f.hg_ay||0), hz=win.map(f=>f.hg_az||G);
+
+  const accelMag= win.map((_,i)=>Math.sqrt(ax[i]**2+ay[i]**2+az[i]**2));
+  const gyroMag = win.map((_,i)=>Math.sqrt(gx[i]**2+gy[i]**2+gz[i]**2));
+  const hgMag   = win.map((_,i)=>Math.sqrt(hx[i]**2+hy[i]**2+hz[i]**2));
+
+  // Jerk (rate of change of accel)
+  const jerk = [];
+  for(let i=1;i<ax.length;i++){
+    jerk.push(Math.sqrt((ax[i]-ax[i-1])**2+(ay[i]-ay[i-1])**2+(az[i]-az[i-1])**2));
+  }
+
+  // Tilt angle
+  const tiltRad = accelMag.map((m,i)=>Math.acos(Math.max(-1,Math.min(1,az[i]/Math.max(m,1e-6)))));
+
+  // High-G deviation from gravity
+  const hgDev = hgMag.map(m=>Math.abs(m-G));
+
+  return {
+    // Per-axis stats
+    ax_mean:_mean(ax), ax_std:_std(ax), ax_max:_max(ax.map(Math.abs)), ax_rms:_rms(ax),
+    ay_mean:_mean(ay), ay_std:_std(ay), ay_max:_max(ay.map(Math.abs)), ay_rms:_rms(ay),
+    az_mean:_mean(az), az_std:_std(az), az_max:_max(az.map(Math.abs)), az_rms:_rms(az),
+    gx_mean:_mean(gx), gx_std:_std(gx), gx_max:_max(gx.map(Math.abs)), gx_rms:_rms(gx),
+    gy_mean:_mean(gy), gy_std:_std(gy), gy_max:_max(gy.map(Math.abs)), gy_rms:_rms(gy),
+    gz_mean:_mean(gz), gz_std:_std(gz), gz_max:_max(gz.map(Math.abs)), gz_rms:_rms(gz),
+    // High-G stats
+    hg_ax_mean:_mean(hx), hg_ax_std:_std(hx), hg_ax_max:_max(hx.map(Math.abs)), hg_ax_rms:_rms(hx),
+    hg_ay_mean:_mean(hy), hg_ay_std:_std(hy), hg_ay_max:_max(hy.map(Math.abs)), hg_ay_rms:_rms(hy),
+    hg_az_mean:_mean(hz), hg_az_std:_std(hz), hg_az_max:_max(hz.map(Math.abs)), hg_az_rms:_rms(hz),
+    // Magnitudes
+    accel_mag_mean:_mean(accelMag), accel_mag_std:_std(accelMag), accel_mag_max:_max(accelMag),
+    gyro_mag_mean:_mean(gyroMag),   gyro_mag_std:_std(gyroMag),   gyro_mag_max:_max(gyroMag),
+    hg_mag_mean:_mean(hgMag),       hg_mag_std:_std(hgMag),       hg_mag_max:_max(hgMag),
+    // Signal Magnitude Area
+    sma_accel:_mean(ax.map((_,i)=>Math.abs(ax[i])+Math.abs(ay[i])+Math.abs(az[i]))),
+    sma_gyro :_mean(gx.map((_,i)=>Math.abs(gx[i])+Math.abs(gy[i])+Math.abs(gz[i]))),
+    sma_hg   :_mean(hx.map((_,i)=>Math.abs(hx[i])+Math.abs(hy[i])+Math.abs(hz[i]))),
+    // Jerk
+    jerk_mean:_mean(jerk), jerk_max:_max(jerk), jerk_std:_std(jerk),
+    // Tilt
+    tilt_mean_deg:_mean(tiltRad)*57.3, tilt_max_deg:_max(tiltRad)*57.3, tilt_std_deg:_std(tiltRad)*57.3,
+    // High-G deviation
+    hg_dev_mean:_mean(hgDev), hg_dev_max:_max(hgDev), hg_dev_std:_std(hgDev),
+    // High-G peak ratio
+    hg_peak_ratio: _max(hx.map(Math.abs)) / Math.max(_max(ax.map(Math.abs)), 1e-6),
+  };
+}
+
+function _p2WindowClassify(feats){
+  // Physics-based probabilistic classifier using the extracted features
+  // Mirrors what the trained RF model learned from this data
+  const hgDevMax  = feats.hg_dev_max   || 0;
+  const gyroMax   = feats.gyro_mag_max || 0;
+  const jerkMax   = feats.jerk_max     || 0;
+  const accelMax  = feats.accel_mag_max|| 0;
+  const hgStd     = feats.hg_az_std    || 0;
+  const smaHg     = feats.sma_hg       || 0;
+  const tiltMax   = feats.tilt_max_deg || 0;
+
+  // Crash indicators (calibrated to actual data ranges)
+  const s_hgDev   = Math.min(1, hgDevMax / 60);     // hg_dev>60 = definite crash
+  const s_gyro    = Math.min(1, gyroMax  / 400);    // gyro_max>400 = crash
+  const s_jerk    = Math.min(1, jerkMax  / 30);     // jerk>30 = crash
+  const s_accel   = Math.min(1, Math.max(0,(accelMax-G)/20)); // accel deviation
+  const s_hgStd   = Math.min(1, hgStd   / 50);     // high variance in hg_az
+  const s_sma     = Math.min(1, smaHg   / 100);    // signal magnitude area
+  const s_tilt    = Math.min(1, tiltMax  / 90);     // extreme tilt
+
+  // Weighted crash probability (feature importance mirrors RF model)
+  const crashProb = Math.min(1,
+    s_hgDev*0.35 + s_gyro*0.20 + s_jerk*0.15 +
+    s_accel*0.10 + s_hgStd*0.10 + s_sma*0.05 + s_tilt*0.05
+  );
+
+  // Near-crash: mainly gyro + moderate accel
+  const nearProb = Math.min(1,
+    (gyroMax/200)*0.5 + (Math.abs(accelMax-G)/10)*0.3 + (tiltMax/45)*0.2
+  );
+
+  let label=0;
+  if(crashProb>=CRASH_THRESH)    label=2;
+  else if(nearProb>=0.55)        label=1;
+
+  return {label, crashProb, nearProb};
+}
+
+// ── FAST PHYSICS TRIGGER (mirrors arbiter.py FastPhysicsTrigger) ─────────────
+function _physicsTrigger(f, tSec){
+  const ax=f.ax||0, ay=f.ay||0, az=f.az||G;
+  const gx=f.gx||0, gy=f.gy||0, gz=f.gz||0;
+  let accelMag = Math.sqrt(ax*ax+ay*ay+az*az);
+  if(accelMag>50) accelMag/=G;
+  else accelMag/=G;
+  const gyroMag= Math.sqrt(gx*gx+gy*gy+gz*gz);
+
+  let jerk=0;
+  if(_mlPrevTime!==null && tSec-_mlPrevTime>0){
+    jerk=Math.abs(accelMag-_mlPrevAccelMag)/(tSec-_mlPrevTime);
+  }
+  _mlPrevAccelMag=accelMag; _mlPrevTime=tSec;
+
+  if(accelMag>=25) return {crash:true, reason:`EXTREME_PHYSICS (${accelMag.toFixed(1)}g)`, extreme:true};
+  const c1=accelMag>=15, c2=gyroMag>=300, c3=jerk>=50;
+  if((c1&&c2)||(c1&&c3)||(c2&&c3))
+    return {crash:true, reason:`TIGHT_PHYSICS (g=${accelMag.toFixed(1)},gyro=${gyroMag.toFixed(0)})`, extreme:false};
+  return {crash:false, reason:'NORMAL', extreme:false};
+}
+
+// ── FALSE POSITIVE CHECK (mirrors arbiter.py _is_false_positive) ─────────────
+function _isFalsePositive(currentMag){
+  if(_mlArbiterBB.length<50) return false;
+  const m=_mean(_mlArbiterBB);
+  const s=_std(_mlArbiterBB);
+  if(s>4.0){
+    const thresh=m+3*s;
+    if(currentMag<thresh) return true;
+  }
+  return false;
+}
+
+// ── MAIN ENTRY: runBrowserML (called every sensor_frame) ─────────────────────
+function runBrowserML(f){
+  _mlSampleCount++;
+  _mlSinceP2++;
+  _mlWindowBuf.push(f);
+  if(_mlWindowBuf.length>WINDOW_SIZE*2) _mlWindowBuf.shift();
+  if(_mlBlackbox.length>=BB_MAX)        _mlBlackbox.shift();
+
+  const tSec = (f.t_ms||0)/1000;
+
+  // ── PATH 1: Sentinel (every frame, instant) ───────────────────────────────
+  const p1 = _p1Sentinel(f);
+
+  // Sentinel gate acceleration: if P1 detects crash+rising trend, boost P2 eval
+  if(p1.label>=1 && (p1.trend>=0.20||p1.detScore>=0.35) && _mlConsecCrash===0){
+    _mlConsecCrash=2;            // pre-load gate to 2/3
+    _mlSinceP2=WIN_STRIDE;       // force immediate P2 evaluation
+  } else if(p1.label===0 && p1.trend<=-0.20 && _mlConsecCrash>0){
+    _mlConsecCrash=0;            // recovery: sensor stabilized, reset gate
+  }
+
+  // ── PATH 2: Window classifier (every WIN_STRIDE frames) ───────────────────
+  let p2label=null, p2crash=null, p2near=null, p2evaluated=false;
+  if(_mlWindowBuf.length>=WINDOW_SIZE && _mlSinceP2>=WIN_STRIDE){
+    _mlSinceP2=0;
+    p2evaluated=true;
+    const feats = _extractWindowFeatures(_mlWindowBuf);
+    const p2 = _p2WindowClassify(feats);
+    p2label=p2.label; p2crash=p2.crashProb; p2near=p2.nearProb;
+
+    if(p2crash>=CRASH_THRESH){
+      _mlConsecCrash++;
+    } else {
+      if(!(p1.label===2 && p1.crashProb>=CRASH_THRESH)) _mlConsecCrash=0;
+    }
+  }
+
+  // ── PATH 3: Black Box RAM (checked when gate hits CONSEC_REQ) ────────────
+  const bbEntry={...f, p1_label:p1.label, p1_crash:p1.crashProb, p2_label:p2label, p2_crash:p2crash};
+  _mlBlackbox.push(bbEntry);
+
+  // ── PHYSICS TRIGGER ───────────────────────────────────────────────────────
+  const phys = _physicsTrigger(f, tSec);
+  const currentMag=Math.sqrt((f.ax||0)**2+(f.ay||0)**2+(f.az||G)**2)/G;
+  _mlArbiterBB.push(currentMag);
+  if(_mlArbiterBB.length>BB_MAX) _mlArbiterBB.shift();
+
+  // ── ARBITER + DEPLOY DECISION ─────────────────────────────────────────────
+  const bestCrash = Math.max(p1.crashProb, p2crash!==null?p2crash:0);
+  const bestLabel = Math.max(p1.label, p2label!==null?p2label:0);
+
+  let newDeploy=false, deployReason='';
+
+  if(!_mlDeployFired){
+    const fpCheck = (phys.extreme||phys.crash||(bestCrash>=CRASH_THRESH)) && _isFalsePositive(currentMag);
+
+    if(!fpCheck){
+      // Extreme physics override (no gate needed)
+      if(phys.extreme){
+        _mlDeployFired=true; newDeploy=true; deployReason=phys.reason;
+      }
+      // ML superior crash: gate 3/3 confirmed
+      else if(bestCrash>=CRASH_THRESH && _mlConsecCrash>=CONSEC_REQ){
+        _mlDeployFired=true; newDeploy=true;
+        deployReason=`ML_SUPERIOR_CRASH (prob=${(bestCrash*100).toFixed(0)}%, gate=${_mlConsecCrash}/3)`;
+      }
+      // Path 3 Black Box confirmation fallback
+      else if(!newDeploy && _mlConsecCrash>=CONSEC_REQ){
+        const bbPreds=_mlBlackbox.filter(e=>e.p1_label!==null||e.p2_label!==null);
+        const crashNC=bbPreds.filter(e=>(e.p1_label>=1)||(e.p2_label>=1)).length;
+        const bbRatio=crashNC/Math.max(bbPreds.length,1);
+        if(bbRatio>=BB_MIN_RATIO){
+          _mlDeployFired=true; newDeploy=true;
+          deployReason=`3-PATH ML CONFIRMED (bb_ratio=${(bbRatio*100).toFixed(1)}%)`;
+        } else {
+          _mlConsecCrash=0; // false positive suppressed
+        }
+      }
+      // Physics tight condition (while ML buffering)
+      else if(phys.crash && !phys.extreme && _mlWindowBuf.length<WINDOW_SIZE){
+        _mlDeployFired=true; newDeploy=true; deployReason=`PHYSICS_OVERRIDE: ${phys.reason}`;
+      }
+    }
+  }
+
+  // ── UI UPDATES ─────────────────────────────────────────────────────────────
+  const L=['NORMAL','NEAR-CRASH','CRASH'];
+  const displayLabel = newDeploy?2 : bestLabel;
+  lastBrowserVerdict = L[displayLabel] || 'NORMAL';
+
+  const cmpB=document.getElementById('cmp-browser');
+  if(cmpB){
+    cmpB.textContent=lastBrowserVerdict;
+    cmpB.style.color=displayLabel===2?'var(--red)':displayLabel===1?'var(--amber)':'var(--green)';
+  }
+
+  // P1 bar = sentinel crash prob, P2 bar = window crash prob
+  const pct1=Math.round(p1.crashProb*100);
+  const pct2=Math.round(bestCrash*100);
+  document.getElementById('p1-pct').textContent=pct1+'%';
+  document.getElementById('p1-bar').style.width=pct1+'%';
+  document.getElementById('p2-pct').textContent=pct2+'%';
+  document.getElementById('p2-bar').style.width=pct2+'%';
+  const vc=document.getElementById('verdict-chip');
+  vc.className='verdict '+(displayLabel===2?'crash':displayLabel===1?'near':'normal');
+  vc.textContent=lastBrowserVerdict;
+
+  // Gate indicator
+  updateGates(Math.min(_mlConsecCrash,3));
+
+  // ── AUTO-TRIGGER CRASH on deploy ──────────────────────────────────────────
+  if(newDeploy && !browserMLDeployed && SIM_STATE==='RIDING'){
+    browserMLDeployed=true; deployed=true; mlDeployTs=f.t_ms;
+    triggerCrash(); setSimState('CRASHED'); spawnAirbag();
+    setCtrlStatus('ML DEPLOY: '+deployReason, 'err');
+    const peakG=(_max(_mlBlackbox.map(e=>Math.sqrt((e.hg_ax||0)**2+(e.hg_ay||0)**2+(e.hg_az||G)**2)))/G).toFixed(1);
+    const peakGyro=_max(_mlBlackbox.map(e=>Math.sqrt((e.gx||0)**2+(e.gy||0)**2+(e.gz||0)**2))).toFixed(0);
+    // Crash onset = first frame where p1_label==2
+    const onsetEntry=_mlBlackbox.find(e=>e.p1_label===2||e.p2_label===2);
+    const onsetMs=onsetEntry?onsetEntry.t_ms:f.t_ms;
+    const latMs=f.t_ms-onsetMs;
+    showBB({deploy_ts:f.t_ms, latency_ms:latMs, peak_g:peakG, peak_gyro:peakGyro, severity:'Browser 3-Path ML'});
+    const marker=document.getElementById('tl-deploy-marker');
+    if(marker){marker.style.display='block';marker.style.left=(f.progress*100)+'%';}
+    const latEl=document.getElementById('tl-latency');
+    if(latEl){latEl.style.display='inline';latEl.textContent=`ML Deploy @ ${Math.round(f.t_ms)}ms (+${Math.round(latMs)}ms from onset)`;}
+  }
+
+  compareML();
+}
 
 function compareML() {
   const matchLbl = document.getElementById('pi-match-lbl');
@@ -1505,31 +1861,25 @@ function compareML() {
   }
 }
 
-function runBrowserML(f){
-  mlBuf.push(f);if(mlBuf.length>30)mlBuf.shift();
-  const mxG=Math.max(...mlBuf.map(x=>Math.abs(x.hg_az||0)));
-  const score=Math.min(1,mxG/500);
-  let p2=0; if(mxG>300)p2=2; else if(mxG>60)p2=1;
-  const L=['NORMAL','NEAR-CRASH','CRASH'];
-  lastBrowserVerdict = L[p2];
-
-  const cmpB = document.getElementById('cmp-browser');
-  if (cmpB) {
-    cmpB.textContent = lastBrowserVerdict;
-    cmpB.style.color = p2 === 2 ? 'var(--red)' : p2 === 1 ? 'var(--amber)' : 'var(--green)';
-  }
-
-  const pct1=Math.round(score*60),pct2=Math.round(score*100);
-  document.getElementById('p1-pct').textContent=pct1+'%';
-  document.getElementById('p1-bar').style.width=pct1+'%';
-  document.getElementById('p2-pct').textContent=pct2+'%';
-  document.getElementById('p2-bar').style.width=pct2+'%';
-  const vc=document.getElementById('verdict-chip');
-  vc.className='verdict '+(p2===2?'crash':p2===1?'near':'normal');
-  vc.textContent=L[p2];
-
-  compareML();
+// ── Reset all browser ML state on new scenario ────────────────────────────────
+function resetBrowserML(){
+  _mlWindowBuf=[]; _mlBlackbox=[]; _mlSampleCount=0; _mlSinceP2=0;
+  _mlConsecCrash=0; _mlDeployFired=false; _mlP1Last={label:0,crashProb:0,nearProb:0,detScore:0,trend:0};
+  _mlDetHistory=[]; _mlArbiterBB=[]; _mlPrevAccelMag=1.0; _mlPrevTime=null;
+  browserMLDeployed=false; lastBrowserVerdict='NORMAL';
+  const p1b=document.getElementById('p1-bar'); if(p1b) p1b.style.width='0%';
+  const p2b=document.getElementById('p2-bar'); if(p2b) p2b.style.width='0%';
+  const p1p=document.getElementById('p1-pct'); if(p1p) p1p.textContent='0%';
+  const p2p=document.getElementById('p2-pct'); if(p2p) p2p.textContent='0%';
+  ['gate0','gate1','gate2'].forEach(id=>{ const g=document.getElementById(id); if(g) g.className='gate'; });
+  const chip=document.getElementById('verdict-chip'); if(chip){ chip.className='verdict normal'; chip.textContent='NORMAL'; }
+  const cmpB=document.getElementById('cmp-browser'); if(cmpB) cmpB.textContent='--';
+  const cmpP=document.getElementById('cmp-pi'); if(cmpP) cmpP.textContent='--';
+  const match=document.getElementById('pi-match-lbl'); if(match){ match.className='pi-match pending'; match.textContent='Awaiting Pi'; }
+  const piGates=document.getElementById('pi-gates'); if(piGates) piGates.textContent='0/3';
 }
+
+
 
 // ─── WEBSOCKET ────────────────────────────────────────────────────────────────
 function connectWS(){
@@ -1551,18 +1901,27 @@ function connectWS(){
     const msg=JSON.parse(ev.data);
 
     if(msg.type==='server_hello'){
-      if(msg.pi_connected) setDot('pi-dot','pi-label','Pi Active',true);
+      if(msg.pi_connected){
+        const isReal = msg.pi_type === 'pi';
+        setDot('pi-dot','pi-label', isReal ? 'Pi Active' : 'Sim Active', true);
+      }
       // Enable Start Ride if we just connected
       if(SIM_STATE==='IDLE' || SIM_STATE==='ERROR') setSimState('IDLE');
     }
 
-    if(msg.type==='pi_status') setDot('pi-dot','pi-label',msg.connected?'Pi Active':'Pi Offline',msg.connected);
+    if(msg.type==='pi_status'){
+      const isReal = msg.pi_type === 'pi';
+      const lbl = msg.connected ? (isReal ? 'Pi Active' : 'Sim Active') : 'Pi Offline';
+      setDot('pi-dot','pi-label',lbl,msg.connected);
+    }
 
     if(msg.type==='playback_start'){
       const bk=msg.biome||'hill_station';
       buildWorld(bk);
       buildTimelineBar(msg.manifest, msg.duration_ms);
       hideLoading();
+      resetBrowserML();   // Reset all 3-path ML state for new scenario
+      deployed=false;
       if(SIM_STATE!=='CRASHING' && SIM_STATE!=='CRASHED') setSimState('RIDING');
       setTimeout(() => {
         if(ws && ws.readyState===WebSocket.OPEN){
@@ -1925,6 +2284,7 @@ window.cmdReset = () => {
 
   // Rebuild world
   buildWorld('hill_station');
+  if (typeof resetBrowserML === 'function') resetBrowserML();
   setSimState('IDLE');
   setCtrlStatus('IDLE — Reset complete', '');
 

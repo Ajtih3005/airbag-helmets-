@@ -1,0 +1,32 @@
+{
+  "scenario_id": "front_collision_demo_01",
+  "segments": [
+    {
+      "event": "highway",
+      "duration_ms": 4500
+    },
+    {
+      "event": "gravel",
+      "duration_ms": 2700
+    },
+    {
+      "event": "pre_crash",
+      "duration_ms": 300
+    },
+    {
+      "event": "lowside",
+      "duration_ms": 2500
+    }
+  ],
+  "timeline": {
+    "normal_start_ms": 0,
+    "near_crash_ms": 4500,
+    "pre_crash_ms": 7200,
+    "crash_ms": 7500,
+    "end_ms": 10000
+  },
+  "crash_known_at_ms": 7500,
+  "pre_crash_known_at_ms": 7200,
+  "total_samples": 10000,
+  "sample_rate_hz": 1000
+}

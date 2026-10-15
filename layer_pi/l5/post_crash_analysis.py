@@ -103,11 +103,29 @@ def compute_crash_metrics(blackbox_entries):
     }
 
 
+# ─── Directory Resolution & Fallback ──────────────────────────────────────────
+
+def _get_writable_logs_dir():
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        test_file = os.path.join(LOGS_DIR, ".perm_test")
+        with open(test_file, "w") as f:
+            f.write("ok")
+        os.remove(test_file)
+        return LOGS_DIR
+    except (PermissionError, OSError):
+        import tempfile
+        fallback = os.path.join(tempfile.gettempdir(), "smart_helmet_logs")
+        os.makedirs(fallback, exist_ok=True)
+        print(f"[LAYER 5 WARN] Permission denied for {LOGS_DIR} — falling back to {fallback}")
+        return fallback
+
+
 # ─── CSV Dump ──────────────────────────────────────────────────────────────────
 
 def dump_blackbox_csv(blackbox_entries, timestamp_str):
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    csv_path = os.path.join(LOGS_DIR, f"crash_blackbox_{timestamp_str}.csv")
+    target_dir = _get_writable_logs_dir()
+    csv_path = os.path.join(target_dir, f"crash_blackbox_{timestamp_str}.csv")
 
     try:
         import pandas as pd
@@ -124,6 +142,8 @@ def dump_blackbox_csv(blackbox_entries, timestamp_str):
                 for row in blackbox_entries:
                     f.write(",".join(str(row.get(h, "")) for h in headers) + "\n")
             print(f"[LAYER 5] Black Box CSV saved (no pandas) -> {csv_path}")
+    except (PermissionError, OSError) as e:
+        print(f"[LAYER 5 ERROR] Could not save Black Box CSV: {e}")
 
     return csv_path
 
@@ -131,8 +151,8 @@ def dump_blackbox_csv(blackbox_entries, timestamp_str):
 # ─── Text Crash Report ─────────────────────────────────────────────────────────
 
 def generate_crash_report(metrics, deploy_ts, crash_onset_ts, latency_ms, reason, timestamp_str):
-    os.makedirs(LOGS_DIR, exist_ok=True)
-    report_path = os.path.join(LOGS_DIR, f"crash_report_{timestamp_str}.txt")
+    target_dir = _get_writable_logs_dir()
+    report_path = os.path.join(target_dir, f"crash_report_{timestamp_str}.txt")
 
     dt = datetime.fromtimestamp(time.time()).strftime("%Y-%m-%d %H:%M:%S")
 
@@ -173,11 +193,15 @@ def generate_crash_report(metrics, deploy_ts, crash_onset_ts, latency_ms, reason
   medical personnel have assessed potential neck/head injuries.
 ================================================================================
 """
-    with open(report_path, "w", encoding="utf-8") as f:
-        f.write(report)
+    try:
+        with open(report_path, "w", encoding="utf-8") as f:
+            f.write(report)
+        print(f"[LAYER 5] Crash report saved -> {report_path}")
+        print(report)
+    except (PermissionError, OSError) as e:
+        print(f"[LAYER 5 ERROR] Could not save crash report: {e}")
+        print(report)
 
-    print(f"[LAYER 5] Crash report saved -> {report_path}")
-    print(report)
     return report_path
 
 
@@ -196,9 +220,19 @@ def write_safety_lock(timestamp_str, reason, metrics):
         "severity": metrics.get("severity", "UNKNOWN"),
         "peak_g": metrics.get("peak_accel_hg_g", 0),
     }
-    with open(LOCK_FILE, "w", encoding="utf-8") as f:
-        json.dump(lock_data, f, indent=2)
-    print(f"[LAYER 5] Safety lock written -> {LOCK_FILE}")
+    lock_file = LOCK_FILE
+    try:
+        with open(lock_file, "w", encoding="utf-8") as f:
+            json.dump(lock_data, f, indent=2)
+    except (PermissionError, OSError):
+        import tempfile
+        lock_file = os.path.join(tempfile.gettempdir(), "AIRBAG_DEPLOYED.lock")
+        try:
+            with open(lock_file, "w", encoding="utf-8") as f:
+                json.dump(lock_data, f, indent=2)
+        except Exception:
+            pass
+    print(f"[LAYER 5] Safety lock written -> {lock_file}")
     print("[LAYER 5] *** Helmet LOCKED — Manual reset required by technician. ***")
 
 

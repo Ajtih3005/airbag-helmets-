@@ -44,14 +44,8 @@ class FastPhysicsTrigger:
         if accel_mag >= self.extreme_thresh:
             return True, f"EXTREME_PHYSICS_OVERRIDE (accel={accel_mag:.1f}g)", True
 
-        # Tight physics check (at least 2 out of 3 conditions)
-        c1 = accel_mag >= self.peak_accel_thresh
-        c2 = gyro_mag >= self.rotation_thresh
-        c3 = jerk >= self.jerk_thresh
-
-        if (c1 and c2) or (c1 and c3) or (c2 and c3):
-            return True, f"TIGHT_PHYSICS_TRIGGER (g={accel_mag:.1f}, gyro={gyro_mag:.1f}, jerk={jerk:.1f})", False
-
+        # TIGHT_PHYSICS_TRIGGER disabled — only extreme (>=25g) bypasses ML.
+        # All other deployments must go through the ML gate (P1→P2→P3).
         return False, "NORMAL", False
 
 
@@ -124,24 +118,6 @@ class DualLayerArbiter:
             self.deployed = True
             return True, phys_reason
 
-        # Condition 2: ML Analysis is Ready
-        if ml_result is not None:
-            crash_prob = ml_result.get("crash_prob", 0.0)
-            pred_label = ml_result.get("label", 0)
-            if crash_prob >= self.crash_prob_thresh:
-                self.consecutive_crash_count += 1
-                if self.consecutive_crash_count >= self.consecutive_req:
-                    self.deployed = True
-                    return True, f"ML_SUPERIOR_CRASH (prob={crash_prob:.1%}, count={self.consecutive_crash_count})"
-                else:
-                    return False, f"ML_CRASH_GATE ({self.consecutive_crash_count}/{self.consecutive_req})"
-            else:
-                self.consecutive_crash_count = 0
-                return False, f"ML_NORMAL (p={crash_prob:.1%})"
-
-        # Condition 3: Fast Physics Override while ML is buffering
-        if phys_crash:
-            self.deployed = True
-            return True, f"TIGHT_CONDITION_PHYSICS_OVERRIDE ({phys_reason})"
-
+        # ML gate is handled entirely by the detector's P1→P2→P3 pipeline.
+        # The arbiter no longer maintains its own consecutive counter.
         return False, "MONITORING"
